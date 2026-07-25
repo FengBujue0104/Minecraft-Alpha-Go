@@ -44,11 +44,9 @@ func (c *Chunk) SetBlock(lx, ly, lz int, b blocks.BlockType) {
 }
 
 // ComputeVisibility scans the chunk and records every exposed block face.
+// Must run on the main thread: it resolves cross-chunk neighbors through
+// worldGet, so it reads chunks the main thread may concurrently mutate.
 func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
-	if !c.loaded {
-		return
-	}
-
 	c.Visible = c.Visible[:0]
 
 	// Face indices match DDA raycast: 0=+Y(top), 1=-Y(bottom), 2=+X(right), 3=-X(left), 4=+Z(front), 5=-Z(back)

@@ -9,6 +9,12 @@ import (
 const (
 	SeaLevel    = 48
 	GroundLevel = 64
+
+	// DirtyBudgetPerFrame caps how many chunks rebuild visibility per frame.
+	// ComputeVisibility is a 16x128x16 x 6-direction scan (~200k neighbour
+	// checks), so an unbounded drain would stutter. Crossing a chunk border
+	// dirties at most ~15 chunks, which settles in ~8 frames at this budget.
+	DirtyBudgetPerFrame = 2
 )
 
 // World manages all chunks and provides block-level access.
@@ -19,6 +25,8 @@ type World struct {
 	loadDist   int // How many chunks to load around player in each direction
 	generating map[[2]int]struct{}
 	genResults chan *Chunk
+	dirty      [][2]int            // FIFO of chunks needing a visibility rebuild
+	dirtySet   map[[2]int]struct{} // membership of dirty, to avoid queueing twice
 }
 
 // NewWorld creates a new world with the given seed.
@@ -30,6 +38,7 @@ func NewWorld(seed int64) *World {
 		loadDist:   1, // 3x3 = 9 chunks
 		generating: make(map[[2]int]struct{}),
 		genResults: make(chan *Chunk, 16),
+		dirtySet:   make(map[[2]int]struct{}),
 	}
 	return w
 }
@@ -80,40 +89,75 @@ func (w *World) LoadChunk(cx, cz int) {
 	}
 	w.generating[key] = struct{}{}
 
-	c := NewChunk(cx, cz)
-	// Snapshot neighbor references before spawning goroutine
-	neighbors := [4]*Chunk{
-		w.GetChunk(cx-1, cz),
-		w.GetChunk(cx+1, cz),
-		w.GetChunk(cx, cz-1),
-		w.GetChunk(cx, cz+1),
-	}
-	go w.generateChunkAsync(c, neighbors)
+	go w.generateChunkAsync(NewChunk(cx, cz))
 }
 
-// generateChunkAsync runs terrain generation and visibility in a goroutine.
-func (w *World) generateChunkAsync(c *Chunk, neighbors [4]*Chunk) {
+// generateChunkAsync fills a chunk with terrain on a worker goroutine.
+// It deliberately touches nothing but c: the chunk is not reachable from
+// w.chunks until the main thread receives it, so this needs no locking.
+// Visibility is NOT computed here — it depends on neighbouring chunks that
+// the main thread owns and mutates.
+func (w *World) generateChunkAsync(c *Chunk) {
 	w.generateTerrain(c)
-	c.ComputeVisibility(func(ncx, ncz int) *Chunk {
-		for _, n := range neighbors {
-			if n != nil && n.CX == ncx && n.CZ == ncz {
-				return n
-			}
-		}
-		return nil
-	})
 	w.genResults <- c
 }
 
-// FlushGenerations blocks until all in-progress chunk generations complete.
+// insertChunk publishes a finished chunk. Main thread only.
+func (w *World) insertChunk(c *Chunk) {
+	c.loaded = true
+	key := [2]int{c.CX, c.CZ}
+	w.chunks[key] = c
+	delete(w.generating, key)
+
+	// A chunk's boundary faces depend on whether the adjacent chunk is
+	// present, so arrival invalidates this chunk and all four neighbours.
+	w.markDirty(c.CX, c.CZ)
+	w.markDirty(c.CX-1, c.CZ)
+	w.markDirty(c.CX+1, c.CZ)
+	w.markDirty(c.CX, c.CZ-1)
+	w.markDirty(c.CX, c.CZ+1)
+}
+
+// markDirty queues a chunk for a visibility rebuild. Absent chunks may be
+// queued freely; ProcessDirty skips whatever is no longer loaded.
+func (w *World) markDirty(cx, cz int) {
+	key := [2]int{cx, cz}
+	if _, ok := w.dirtySet[key]; ok {
+		return
+	}
+	w.dirtySet[key] = struct{}{}
+	w.dirty = append(w.dirty, key)
+}
+
+// ProcessDirty rebuilds visibility for up to budget chunks, oldest first.
+// A budget <= 0 drains the whole queue.
+func (w *World) ProcessDirty(budget int) {
+	done := 0
+	for len(w.dirty) > 0 {
+		if budget > 0 && done >= budget {
+			return
+		}
+		key := w.dirty[0]
+		w.dirty = w.dirty[1:]
+		delete(w.dirtySet, key)
+
+		c := w.GetChunk(key[0], key[1])
+		if c == nil {
+			continue // unloaded while queued; nothing to rebuild
+		}
+		c.ComputeVisibility(w.GetChunk)
+		done++ // only real work spends budget
+	}
+}
+
+// FlushGenerations blocks until all in-progress chunk generations complete
+// and every pending visibility rebuild has run. Used at startup so the
+// player does not spawn into an unrendered world.
 func (w *World) FlushGenerations() {
 	for len(w.generating) > 0 {
-		c := <-w.genResults
-		c.loaded = true
-		key := [2]int{c.CX, c.CZ}
-		w.chunks[key] = c
-		delete(w.generating, key)
+		w.insertChunk(<-w.genResults)
 	}
+	w.ProcessDirty(0)
 }
 
 // ProcessGenerations finalizes any chunks that finished async generation.
@@ -122,10 +166,7 @@ func (w *World) ProcessGenerations() {
 	for {
 		select {
 		case c := <-w.genResults:
-			c.loaded = true
-			key := [2]int{c.CX, c.CZ}
-			w.chunks[key] = c
-			delete(w.generating, key)
+			w.insertChunk(c)
 		default:
 			return
 		}
@@ -139,14 +180,15 @@ func (w *World) UnloadChunk(cx, cz int) {
 	if !ok {
 		return
 	}
-	// Rebuild neighbors so faces at the boundary become visible again
-	for _, off := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
-		if nc := w.GetChunk(cx+off[0], cz+off[1]); nc != nil {
-			nc.ComputeVisibility(w.GetChunk)
-		}
-	}
 	c.Unload()
 	delete(w.chunks, key)
+
+	// Delete first, then invalidate: the neighbours' boundary faces must be
+	// recomputed against this chunk being gone, not still present.
+	w.markDirty(cx-1, cz)
+	w.markDirty(cx+1, cz)
+	w.markDirty(cx, cz-1)
+	w.markDirty(cx, cz+1)
 }
 
 // generateTerrain fills the chunk with blocks based on noise.
@@ -288,7 +330,8 @@ func (w *World) EnsureChunksAround(worldX, worldZ float32) {
 		}
 	}
 
-	// Unload distant chunks (skip chunks still generating)
+	// Unload distant chunks. A chunk still generating is not in w.chunks yet,
+	// so it cannot appear here and needs no guard.
 	keysToDelete := make([][2]int, 0)
 	for key := range w.chunks {
 		if key[0] < cx-w.loadDist || key[0] > cx+w.loadDist ||
@@ -297,9 +340,7 @@ func (w *World) EnsureChunksAround(worldX, worldZ float32) {
 		}
 	}
 	for _, key := range keysToDelete {
-		if _, generating := w.generating[key]; !generating {
-			w.UnloadChunk(key[0], key[1])
-		}
+		w.UnloadChunk(key[0], key[1])
 	}
 }
 

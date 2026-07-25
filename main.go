@@ -93,6 +93,7 @@ func main() {
 
 		w.EnsureChunksAround(p.Position.X, p.Position.Z)
 		w.ProcessGenerations()
+		w.ProcessDirty(world.DirtyBudgetPerFrame)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.SkyBlue)
