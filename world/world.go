@@ -1,6 +1,8 @@
 package world
 
 import (
+	"sort"
+
 	rl "github.com/gen2brain/raylib-go/raylib"
 
 	"mc-go/blocks"
@@ -27,6 +29,9 @@ type World struct {
 	genResults chan *Chunk
 	dirty      [][2]int            // FIFO of chunks needing a visibility rebuild
 	dirtySet   map[[2]int]struct{} // membership of dirty, to avoid queueing twice
+	order      [][2]int            // stable draw order; map order would flicker
+	tOrder     [][2]int            // scratch: order re-sorted back to front
+	orderDirty bool
 }
 
 // NewWorld creates a new world with the given seed.
@@ -108,6 +113,7 @@ func (w *World) insertChunk(c *Chunk) {
 	key := [2]int{c.CX, c.CZ}
 	w.chunks[key] = c
 	delete(w.generating, key)
+	w.orderDirty = true
 
 	// A chunk's boundary faces depend on whether the adjacent chunk is
 	// present, so arrival invalidates this chunk and all four neighbours.
@@ -182,6 +188,7 @@ func (w *World) UnloadChunk(cx, cz int) {
 	}
 	c.Unload()
 	delete(w.chunks, key)
+	w.orderDirty = true
 
 	// Delete first, then invalidate: the neighbours' boundary faces must be
 	// recomputed against this chunk being gone, not still present.
@@ -344,48 +351,93 @@ func (w *World) EnsureChunksAround(worldX, worldZ float32) {
 	}
 }
 
-// Render draws all loaded chunks.
-// Opaque blocks: DrawCubeV (one cube per block position, with wireframes).
-// Transparent blocks: individual faces via DrawTriangle3D (no z-fighting, correct adjacency).
-func (w *World) Render() {
-	for _, c := range w.chunks {
-		if !c.loaded {
+// Render draws all loaded chunks: opaque geometry first so the depth buffer
+// is complete, then transparent faces back to front.
+func (w *World) Render(camPos rl.Vector3) {
+	w.refreshOrder()
+
+	for _, key := range w.order {
+		c := w.chunks[key]
+		if c == nil || !c.loaded {
 			continue
 		}
-		originX := float32(c.CX * ChunkWidth)
-		originZ := float32(c.CZ * ChunkDepth)
-
-		// Track drawn opaque block positions for deduplication
-		seen := make(map[[3]int]struct{})
-
-		for _, vf := range c.Visible {
-			wx := originX + float32(vf.LocalX)
-			wy := float32(vf.LocalY)
-			wz := originZ + float32(vf.LocalZ)
-
-			if vf.Block.IsTransparent() {
-				// Transparent: draw each exposed face individually
-				col := vf.Block.Color(faceToName(vf.Face))
-				col.A = 140
-				drawFace(wx, wy, wz, vf.Face, col)
-			} else {
-				// Opaque: deduplicate and draw as cube
-				pos := [3]int{vf.LocalX, vf.LocalY, vf.LocalZ}
-				if _, ok := seen[pos]; ok {
-					continue
-				}
-				seen[pos] = struct{}{}
-
-				px := wx + 0.5
-				py := wy + 0.5
-				pz := wz + 0.5
-				col := vf.Block.Color("")
-				rl.DrawCubeV(rl.NewVector3(px, py, pz), rl.NewVector3(1, 1, 1), col)
-				darkCol := rl.NewColor(col.R/2, col.G/2, col.B/2, 255)
-				rl.DrawCubeWires(rl.NewVector3(px, py, pz), 1.002, 1.002, 1.002, darkCol)
-			}
-		}
+		w.drawFaces(c, c.VisibleOpaque)
 	}
+
+	// Chunks sorted far-to-near for blending. Ranging over w.chunks directly
+	// would reorder them every frame, since Go randomises map iteration —
+	// that alone made the water surface flicker.
+	w.tOrder = append(w.tOrder[:0], w.order...)
+	sort.Slice(w.tOrder, func(i, j int) bool {
+		return chunkDistSq(w.tOrder[i], camPos) > chunkDistSq(w.tOrder[j], camPos)
+	})
+	for _, key := range w.tOrder {
+		c := w.chunks[key]
+		if c == nil || !c.loaded {
+			continue
+		}
+		w.drawFaces(c, c.VisibleTransparent)
+	}
+}
+
+func (w *World) drawFaces(c *Chunk, faces []VisibleFace) {
+	originX := float32(c.CX * ChunkWidth)
+	originZ := float32(c.CZ * ChunkDepth)
+	for _, vf := range faces {
+		col := shade(vf.Block.Color(faceToName(vf.Face)), faceShade(vf.Face))
+		drawFace(originX+float32(vf.LocalX), float32(vf.LocalY), originZ+float32(vf.LocalZ), vf.Face, col)
+	}
+}
+
+// refreshOrder rebuilds the stable chunk draw order. Only chunk load/unload
+// changes it, so this is near-free on a typical frame.
+func (w *World) refreshOrder() {
+	if !w.orderDirty {
+		return
+	}
+	w.order = w.order[:0]
+	for key := range w.chunks {
+		w.order = append(w.order, key)
+	}
+	sort.Slice(w.order, func(i, j int) bool {
+		if w.order[i][0] != w.order[j][0] {
+			return w.order[i][0] < w.order[j][0]
+		}
+		return w.order[i][1] < w.order[j][1]
+	})
+	w.orderDirty = false
+}
+
+// chunkDistSq is the squared horizontal distance from a chunk's centre to p.
+func chunkDistSq(key [2]int, p rl.Vector3) float32 {
+	dx := float32(key[0]*ChunkWidth) + ChunkWidth/2 - p.X
+	dz := float32(key[1]*ChunkDepth) + ChunkDepth/2 - p.Z
+	return dx*dx + dz*dz
+}
+
+// faceShade fakes directional light so neighbouring blocks of the same colour
+// stay distinguishable. This replaces the per-block wireframe, which cost more
+// geometry than the blocks it outlined.
+func faceShade(face int) float32 {
+	switch face {
+	case 0: // Top
+		return 1.0
+	case 1: // Bottom
+		return 0.55
+	case 2, 3: // +X / -X
+		return 0.8
+	default: // +Z / -Z
+		return 0.68
+	}
+}
+
+func shade(c rl.Color, f float32) rl.Color {
+	return rl.NewColor(
+		uint8(float32(c.R)*f),
+		uint8(float32(c.G)*f),
+		uint8(float32(c.B)*f),
+		c.A,
+	)
 }
 
 // faceToName maps a face index to the name expected by blocks.Color.

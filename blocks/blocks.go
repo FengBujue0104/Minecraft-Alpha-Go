@@ -59,7 +59,7 @@ func (b BlockType) Color(face string) rl.Color {
 		}
 		return rl.NewColor(140, 110, 70, 255) // Bark
 	case Leaves:
-		return rl.NewColor(48, 116, 48, 255)
+		return rl.NewColor(48, 116, 48, 220)
 	case Sand:
 		return rl.NewColor(219, 211, 160, 255)
 	case Water:

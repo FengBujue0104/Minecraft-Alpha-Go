@@ -19,10 +19,13 @@ type VisibleFace struct {
 
 // Chunk represents a 16x128x16 section of the world.
 type Chunk struct {
-	CX, CZ  int
-	Blocks  [ChunkWidth][ChunkHeight][ChunkDepth]blocks.BlockType
-	Visible []VisibleFace
-	loaded  bool
+	CX, CZ int
+	Blocks [ChunkWidth][ChunkHeight][ChunkDepth]blocks.BlockType
+	// Visible faces are split by material so Render can draw all opaque
+	// geometry before any blending, rather than interleaving the two.
+	VisibleOpaque      []VisibleFace
+	VisibleTransparent []VisibleFace
+	loaded             bool
 }
 
 func NewChunk(cx, cz int) *Chunk {
@@ -47,7 +50,8 @@ func (c *Chunk) SetBlock(lx, ly, lz int, b blocks.BlockType) {
 // Must run on the main thread: it resolves cross-chunk neighbors through
 // worldGet, so it reads chunks the main thread may concurrently mutate.
 func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
-	c.Visible = c.Visible[:0]
+	c.VisibleOpaque = c.VisibleOpaque[:0]
+	c.VisibleTransparent = c.VisibleTransparent[:0]
 
 	// Face indices match DDA raycast: 0=+Y(top), 1=-Y(bottom), 2=+X(right), 3=-X(left), 4=+Z(front), 5=-Z(back)
 	directions := [6][3]int{
@@ -96,13 +100,18 @@ func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
 					}
 
 					if !neighborExists || neighbor == blocks.Air || (neighbor.IsTransparent() && neighbor != b) {
-						c.Visible = append(c.Visible, VisibleFace{
+						vf := VisibleFace{
 							LocalX: lx,
 							LocalY: ly,
 							LocalZ: lz,
 							Face:   faceIdx,
 							Block:  b,
-						})
+						}
+						if b.IsTransparent() {
+							c.VisibleTransparent = append(c.VisibleTransparent, vf)
+						} else {
+							c.VisibleOpaque = append(c.VisibleOpaque, vf)
+						}
 					}
 				}
 			}
@@ -110,7 +119,8 @@ func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
 	}
 }
 
-// Unload clears the visible face list.
+// Unload clears the visible face lists.
 func (c *Chunk) Unload() {
-	c.Visible = nil
+	c.VisibleOpaque = nil
+	c.VisibleTransparent = nil
 }

@@ -2,6 +2,11 @@ package world
 
 import "testing"
 
+// visibleCount is the total face count across both material passes.
+func visibleCount(c *Chunk) int {
+	return len(c.VisibleOpaque) + len(c.VisibleTransparent)
+}
+
 // TestChunksHaveVisibleFacesAfterFlush guards the regression where
 // ComputeVisibility was called on the generation goroutine while the chunk's
 // `loaded` flag was still false, so its guard returned early and every freshly
@@ -21,7 +26,7 @@ func TestChunksHaveVisibleFacesAfterFlush(t *testing.T) {
 			if c == nil {
 				t.Fatalf("chunk (%d,%d) missing", cx, cz)
 			}
-			if len(c.Visible) == 0 {
+			if visibleCount(c) == 0 {
 				t.Errorf("chunk (%d,%d) has no visible faces — terrain would be invisible", cx, cz)
 			}
 		}
@@ -44,14 +49,12 @@ func TestInteriorSeamsAreHidden(t *testing.T) {
 
 	// Face 3 is -X. A block at lx==0 whose -X neighbour (in chunk -1) is
 	// solid is fully enclosed and must not be in the visible set.
-	for _, vf := range c.Visible {
+	for _, vf := range c.VisibleOpaque {
 		if vf.LocalX != 0 || vf.Face != 3 {
 			continue
 		}
-		wx := -1
-		wy := vf.LocalY
 		wz := c.CZ*ChunkDepth + vf.LocalZ
-		if nb := w.GetBlock(wx, wy, wz); !nb.IsTransparent() {
+		if nb := w.GetBlock(-1, vf.LocalY, wz); !nb.IsTransparent() {
 			t.Fatalf("face at local(0,%d,%d) emitted toward solid neighbour %v — stale seam",
 				vf.LocalY, vf.LocalZ, nb)
 		}
@@ -65,13 +68,58 @@ func TestUnloadReexposesNeighbourBoundary(t *testing.T) {
 	w.EnsureChunksAround(0, 0)
 	w.FlushGenerations()
 
-	before := len(w.GetChunk(0, 0).Visible)
+	before := visibleCount(w.GetChunk(0, 0))
 
 	w.UnloadChunk(-1, 0)
 	w.ProcessDirty(0)
 
-	after := len(w.GetChunk(0, 0).Visible)
+	after := visibleCount(w.GetChunk(0, 0))
 	if after <= before {
 		t.Errorf("unloading the -X neighbour should expose more faces on (0,0): %d -> %d", before, after)
+	}
+}
+
+// TestFacesSplitByMaterial guards the two-pass render contract: a face must
+// land in exactly the slice matching its block's transparency, or opaque
+// geometry would blend and water would write depth ahead of it.
+func TestFacesSplitByMaterial(t *testing.T) {
+	w := NewWorld(777)
+	w.EnsureChunksAround(0, 0)
+	w.FlushGenerations()
+
+	for _, key := range [][2]int{{0, 0}, {1, 0}, {0, 1}} {
+		c := w.GetChunk(key[0], key[1])
+		for _, vf := range c.VisibleOpaque {
+			if vf.Block.IsTransparent() {
+				t.Fatalf("transparent %v in the opaque pass", vf.Block)
+			}
+		}
+		for _, vf := range c.VisibleTransparent {
+			if !vf.Block.IsTransparent() {
+				t.Fatalf("opaque %v in the transparent pass", vf.Block)
+			}
+		}
+	}
+}
+
+// TestDrawOrderIsStable covers the flicker: Render used to range over the
+// chunk map directly, and Go randomises map iteration on every pass.
+func TestDrawOrderIsStable(t *testing.T) {
+	w := NewWorld(555)
+	w.EnsureChunksAround(0, 0)
+	w.FlushGenerations()
+
+	w.refreshOrder()
+	first := append([][2]int(nil), w.order...)
+
+	for i := 0; i < 20; i++ {
+		w.orderDirty = true
+		w.refreshOrder()
+		for j := range first {
+			if w.order[j] != first[j] {
+				t.Fatalf("draw order changed on rebuild %d at index %d: %v vs %v",
+					i, j, w.order[j], first[j])
+			}
+		}
 	}
 }

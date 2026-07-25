@@ -99,7 +99,7 @@ func main() {
 		rl.ClearBackground(rl.SkyBlue)
 
 		rl.BeginMode3D(p.Camera)
-		w.Render()
+		w.Render(p.Camera.Position)
 
 		if p.TargetFace >= 0 {
 			bx := float32(p.TargetBlockPos[0])
