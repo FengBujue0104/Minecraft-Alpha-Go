@@ -12,12 +12,20 @@ import (
 const (
 	PlayerHeight     float32 = 1.62
 	PlayerWidth      float32 = 0.6
-	EyeHeight        float32 = 1.62
+	EyeHeight        float32 = 1.5
 	Gravity          float32 = 25.0
 	JumpVelocity     float32 = 9.0
 	MoveSpeed        float32 = 8.0
 	MouseSensitivity float32 = 0.005
 	ReachDistance    float64 = 6.0
+
+	// MaxStepBlocks caps how far the player may move vertically in one
+	// physics step. collidesAtY samples a single block layer rather than
+	// sweeping, so a step of a full block or more can skip a thin floor
+	// entirely. Must stay below 1.0.
+	MaxStepBlocks float32 = 0.9
+	// MaxSinkSpeed limits downward speed in water.
+	MaxSinkSpeed float32 = 3.0
 )
 
 // Player holds all player state including camera and physics.
@@ -182,13 +190,21 @@ func (p *Player) StepPhysics(w *world.World, dt float32) {
 		if !p.OnGround {
 			p.Velocity.Y -= Gravity * dt * 0.3
 		}
-		if p.Velocity.Y < -3 {
-			p.Velocity.Y = -3
+		if p.Velocity.Y < -MaxSinkSpeed {
+			p.Velocity.Y = -MaxSinkSpeed
 		}
 	} else {
 		if !p.OnGround {
 			p.Velocity.Y -= Gravity * dt
 		}
+	}
+
+	// Clamp so one step can never cross a whole block, in air or water.
+	// Derived from dt rather than hardcoded so the bound holds if the
+	// physics rate changes.
+	maxFall := MaxStepBlocks / dt
+	if p.Velocity.Y < -maxFall {
+		p.Velocity.Y = -maxFall
 	}
 
 	p.moveWithCollision(w, dt)
@@ -218,11 +234,17 @@ func (p *Player) moveWithCollision(w *world.World, dt float32) {
 		newPos.Y = float32(world.ChunkHeight - 1)
 		p.Velocity.Y = 0
 	}
-	if p.collidesAtY(w, newPos) {
+	if hit, blockY := p.collidesAtY(w, newPos); hit {
 		if p.Velocity.Y < 0 {
 			p.OnGround = true
+			// Snap to the top face of the block landed on. Reverting to the
+			// previous Y instead would leave the player hovering by up to a
+			// step's worth of travel after a fast fall, then visibly settle
+			// over the next several frames.
+			newPos.Y = float32(blockY) + 1.0
+		} else {
+			newPos.Y = p.Position.Y
 		}
-		newPos.Y = p.Position.Y
 		p.Velocity.Y = 0
 	} else {
 		p.OnGround = false
@@ -238,8 +260,9 @@ func (p *Player) moveWithCollision(w *world.World, dt float32) {
 	p.Position = newPos
 }
 
-// collidesAtY checks vertical collisions across the full player width.
-func (p *Player) collidesAtY(w *world.World, pos rl.Vector3) bool {
+// collidesAtY checks vertical collisions across the full player width and
+// reports which block layer was tested, so the caller can snap to its surface.
+func (p *Player) collidesAtY(w *world.World, pos rl.Vector3) (bool, int) {
 	hw := PlayerWidth/2.0 - 0.01
 	minBX := int(math.Floor(float64(pos.X - hw)))
 	maxBX := int(math.Floor(float64(pos.X + hw)))
@@ -261,35 +284,34 @@ func (p *Player) collidesAtY(w *world.World, pos rl.Vector3) bool {
 	for bx := minBX; bx <= maxBX; bx++ {
 		for bz := minBZ; bz <= maxBZ; bz++ {
 			if w.GetBlock(bx, checkY, bz).IsSolid() {
-				return true
+				return true, checkY
 			}
 		}
 	}
-	return false
+	return false, checkY
 }
 
+// collidesAt reports whether the player's box at pos overlaps a solid block.
+// Every block layer the box spans is tested at every column it covers: with
+// PlayerHeight 1.62 the box straddles three layers at most fractional heights,
+// and sampling fixed points would leave the middle layer checked only along
+// the centre axis, letting the player walk into a block at a corner.
 func (p *Player) collidesAt(w *world.World, pos rl.Vector3) bool {
 	hw := PlayerWidth/2.0 - 0.01 // slight inset avoids false collision with floor
-	// Check corners of player bounding box, with epsilon on Y edges
-	checkPoints := [][3]float32{
-		{pos.X - hw, pos.Y + 0.01, pos.Z - hw},
-		{pos.X + hw, pos.Y + 0.01, pos.Z - hw},
-		{pos.X - hw, pos.Y + 0.01, pos.Z + hw},
-		{pos.X + hw, pos.Y + 0.01, pos.Z + hw},
-		{pos.X - hw, pos.Y + PlayerHeight - 0.01, pos.Z - hw},
-		{pos.X + hw, pos.Y + PlayerHeight - 0.01, pos.Z - hw},
-		{pos.X - hw, pos.Y + PlayerHeight - 0.01, pos.Z + hw},
-		{pos.X + hw, pos.Y + PlayerHeight - 0.01, pos.Z + hw},
-		{pos.X, pos.Y + PlayerHeight/2, pos.Z},
-	}
+	minBX := int(math.Floor(float64(pos.X - hw)))
+	maxBX := int(math.Floor(float64(pos.X + hw)))
+	minBY := int(math.Floor(float64(pos.Y + 0.01)))
+	maxBY := int(math.Floor(float64(pos.Y + PlayerHeight - 0.01)))
+	minBZ := int(math.Floor(float64(pos.Z - hw)))
+	maxBZ := int(math.Floor(float64(pos.Z + hw)))
 
-	for _, cp := range checkPoints {
-		bx := int(math.Floor(float64(cp[0])))
-		by := int(math.Floor(float64(cp[1])))
-		bz := int(math.Floor(float64(cp[2])))
-		b := w.GetBlock(bx, by, bz)
-		if b.IsSolid() {
-			return true
+	for bx := minBX; bx <= maxBX; bx++ {
+		for by := minBY; by <= maxBY; by++ {
+			for bz := minBZ; bz <= maxBZ; bz++ {
+				if w.GetBlock(bx, by, bz).IsSolid() {
+					return true
+				}
+			}
 		}
 	}
 	return false
