@@ -380,6 +380,18 @@ func (w *World) Render(camPos rl.Vector3) {
 	}
 }
 
+// drawFaces emits every face of one chunk as quads in a single immediate-mode
+// block. Quads are what raylib's render batch is built around -- its buffer is
+// sized and its overflow check aligned in multiples of 4 vertices -- so a batch
+// flush can only ever land on a face boundary. Emitting triangles instead lets
+// a flush land mid-primitive, after which every following primitive in the
+// batch is assembled from a shifted vertex triple, which showed up as large
+// spurious wedges across the terrain.
+// drawFaces draws one chunk's faces. Each face goes through a single
+// DrawTriangle3D pair rather than rl.Begin(rl.Quads)/rl.Vertex3f: this binding
+// is purego, so every rlgl call is an FFI crossing, and pushing vertices one at
+// a time measured ~68% slower (29.1ms vs 17.3ms per frame) despite sending
+// fewer vertices.
 func (w *World) drawFaces(c *Chunk, faces []VisibleFace) {
 	originX := float32(c.CX * ChunkWidth)
 	originZ := float32(c.CZ * ChunkDepth)
@@ -452,7 +464,8 @@ func faceToName(face int) string {
 	}
 }
 
-// drawFace draws a single block face as two CCW triangles.
+// drawFace draws a single block face as two CCW triangles, wound so the
+// outward normal points away from the block. Face indices follow chunk.go.
 func drawFace(x, y, z float32, face int, col rl.Color) {
 	switch face {
 	case 0: // Top (+Y)
