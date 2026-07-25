@@ -21,13 +21,17 @@ const (
 )
 
 func main() {
-	// Panic recovery: write crash info to log file
+	// Panic recovery: report the stack, and persist it if we can.
 	defer func() {
 		if r := recover(); r != nil {
-			f, _ := os.Create("crash.log")
-			defer f.Close()
-			fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, debug.Stack())
-			fmt.Printf("CRASH! See crash.log for details.\n")
+			// Print first — if creating the log fails, the stack is still
+			// visible rather than silently lost.
+			fmt.Printf("PANIC: %v\n\nStack:\n%s\n", r, debug.Stack())
+			if f, err := os.Create("crash.log"); err == nil {
+				fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, debug.Stack())
+				f.Close()
+				fmt.Println("Wrote crash.log")
+			}
 		}
 	}()
 
@@ -50,9 +54,12 @@ func main() {
 	w.FlushGenerations()
 	fmt.Printf("Done! Loaded %d chunks.\n", w.ChunkCount())
 
-	spawnY := float32(w.GroundHeight(int(spawnX), int(spawnZ))) + 2.5
-	if spawnY < 2.5 {
-		spawnY = 100 // Fallback if no ground found
+	// Stand on the surface. Falls back to a safe height only when no ground
+	// was found at all -- previously this read GroundHeight's 0 sentinel as a
+	// real height, so the fallback could never trigger.
+	spawnY := float32(100)
+	if g, ok := w.GroundHeight(int(spawnX), int(spawnZ)); ok {
+		spawnY = float32(g) + 1
 	}
 	p := player.NewPlayer(spawnX, spawnY, spawnZ)
 	p.SkipNextMouseFrame() // initial cursor-disable spike

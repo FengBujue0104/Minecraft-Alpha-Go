@@ -415,8 +415,11 @@ func (p *Player) updateBlockSelection(w *world.World) {
 			return
 		}
 
-		// Step to the next voxel
+		// Step to the next voxel, keeping the ray parameter at which we
+		// entered it. dir is normalised, so t is distance along the ray.
+		var t float64
 		if tMaxX < tMaxY && tMaxX < tMaxZ {
+			t = tMaxX
 			tMaxX += tDeltaX
 			vx += stepX
 			if stepX > 0 {
@@ -425,6 +428,7 @@ func (p *Player) updateBlockSelection(w *world.World) {
 				face = 2 // Right face (entered from +X)
 			}
 		} else if tMaxY < tMaxZ {
+			t = tMaxY
 			tMaxY += tDeltaY
 			vy += stepY
 			if stepY > 0 {
@@ -433,6 +437,7 @@ func (p *Player) updateBlockSelection(w *world.World) {
 				face = 0 // Top face (entered from +Y)
 			}
 		} else {
+			t = tMaxZ
 			tMaxZ += tDeltaZ
 			vz += stepZ
 			if stepZ > 0 {
@@ -442,11 +447,9 @@ func (p *Player) updateBlockSelection(w *world.World) {
 			}
 		}
 
-		// Check distance limit
-		dx := float64(vx) + 0.5 - float64(start.X)
-		dy := float64(vy) + 0.5 - float64(start.Y)
-		dz := float64(vz) + 0.5 - float64(start.Z)
-		if math.Sqrt(dx*dx+dy*dy+dz*dz) > ReachDistance {
+		// Measuring to the voxel centre instead would vary by up to ~0.87
+		// blocks with direction, making diagonal reach longer than axial.
+		if t > ReachDistance {
 			break
 		}
 	}

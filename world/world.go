@@ -48,25 +48,26 @@ func NewWorld(seed int64) *World {
 	return w
 }
 
-// GroundHeight returns the Y coordinate of the highest solid block near (wx, wz).
-// Scans a 3x3 area to avoid spawning inside nearby elevated terrain.
-// Returns 0 if no solid block is found.
-func (w *World) GroundHeight(wx, wz int) int {
-	maxH := 0
+// GroundHeight returns the Y of the highest solid block near (wx, wz) and
+// whether one was found. Scans a 3x3 area so the spawn does not end up inside
+// adjacent higher terrain. The ok result matters: an unloaded chunk reads as
+// Air, which is indistinguishable from genuine ground at y=0 without it.
+func (w *World) GroundHeight(wx, wz int) (int, bool) {
+	best := -1
 	for dx := -1; dx <= 1; dx++ {
 		for dz := -1; dz <= 1; dz++ {
-			for y := ChunkHeight - 1; y >= maxH; y-- {
-				b := w.GetBlock(wx+dx, y, wz+dz)
-				if b.IsSolid() {
-					if y > maxH {
-						maxH = y
-					}
+			for y := ChunkHeight - 1; y > best; y-- {
+				if w.GetBlock(wx+dx, y, wz+dz).IsSolid() {
+					best = y
 					break
 				}
 			}
 		}
 	}
-	return maxH
+	if best < 0 {
+		return 0, false
+	}
+	return best, true
 }
 
 // GetChunk returns the chunk at (cx, cz).
@@ -219,6 +220,10 @@ func (w *World) generateTerrain(c *Chunk) {
 						continue
 					}
 					break
+				} else if ly == 0 {
+					// Checked before the dirt band: for a low enough height
+					// the two ranges overlap and bedrock would be skipped.
+					c.Blocks[lx][ly][lz] = blocks.Bedrock
 				} else if ly == height {
 					if ly <= SeaLevel+1 {
 						c.Blocks[lx][ly][lz] = blocks.Sand
@@ -227,8 +232,6 @@ func (w *World) generateTerrain(c *Chunk) {
 					}
 				} else if ly >= height-3 {
 					c.Blocks[lx][ly][lz] = blocks.Dirt
-				} else if ly == 0 {
-					c.Blocks[lx][ly][lz] = blocks.Bedrock
 				} else {
 					c.Blocks[lx][ly][lz] = blocks.Stone
 				}

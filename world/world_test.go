@@ -1,10 +1,51 @@
 package world
 
-import "testing"
+import (
+	"testing"
+
+	"mc-go/blocks"
+)
 
 // visibleCount is the total face count across both material passes.
 func visibleCount(c *Chunk) int {
 	return len(c.VisibleOpaque) + len(c.VisibleTransparent)
+}
+
+// TestGroundHeightReportsMissingGround covers the spawn fallback that could
+// never fire: GroundHeight's old 0 sentinel was indistinguishable from real
+// ground at y=0, so `spawnY < 2.5` was unsatisfiable and a player over
+// ungenerated terrain spawned at 2.5 rather than the intended safe height.
+func TestGroundHeightReportsMissingGround(t *testing.T) {
+	w := NewWorld(31337)
+	w.EnsureChunksAround(0, 0)
+	w.FlushGenerations()
+
+	if _, ok := w.GroundHeight(0, 0); !ok {
+		t.Error("expected ground at spawn")
+	}
+
+	// Far outside any loaded chunk: every block reads as Air.
+	if h, ok := w.GroundHeight(100000, 100000); ok {
+		t.Errorf("expected no ground in unloaded terrain, got height %d", h)
+	}
+}
+
+// TestBedrockAtWorldFloor guards the ordering in generateTerrain: the dirt
+// band (ly >= height-3) used to be tested before ly == 0, so a low enough
+// column would place dirt at the world floor instead of bedrock.
+func TestBedrockAtWorldFloor(t *testing.T) {
+	w := NewWorld(8080)
+	w.EnsureChunksAround(0, 0)
+	w.FlushGenerations()
+
+	c := w.GetChunk(0, 0)
+	for lx := 0; lx < ChunkWidth; lx++ {
+		for lz := 0; lz < ChunkDepth; lz++ {
+			if got := c.Blocks[lx][0][lz]; got != blocks.Bedrock {
+				t.Fatalf("floor at local(%d,0,%d) is %v, want Bedrock", lx, lz, got)
+			}
+		}
+	}
 }
 
 // TestChunksHaveVisibleFacesAfterFlush guards the regression where

@@ -29,7 +29,10 @@ const dropHeight float32 = world.ChunkHeight - 5
 // block and the player passed straight through the ground.
 func TestFastFallDoesNotTunnel(t *testing.T) {
 	w := testWorld(t)
-	ground := w.GroundHeight(0, 0)
+	ground, ok := w.GroundHeight(0, 0)
+	if !ok {
+		t.Fatal("no ground at spawn")
+	}
 
 	p := NewPlayer(0.5, dropHeight, 0.5)
 	p.Velocity.Y = -100000 // absurd: the clamp must contain it
