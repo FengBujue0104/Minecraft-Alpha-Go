@@ -1,6 +1,7 @@
 package world
 
 import (
+	"math"
 	"sort"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
@@ -17,6 +18,11 @@ const (
 	// checks), so an unbounded drain would stutter. Crossing a chunk border
 	// dirties at most ~15 chunks, which settles in ~8 frames at this budget.
 	DirtyBudgetPerFrame = 2
+
+	// chunkRadius is the horizontal distance from a chunk's centre to its
+	// far corner. Used as the margin on the behind-camera cull so a chunk is
+	// only dropped once no part of it can be in front of the camera.
+	chunkRadius = 12 // ceil(sqrt(8^2 + 8^2))
 )
 
 // World manages all chunks and provides block-level access.
@@ -31,6 +37,7 @@ type World struct {
 	dirtySet   map[[2]int]struct{} // membership of dirty, to avoid queueing twice
 	order      [][2]int            // stable draw order; map order would flicker
 	tOrder     [][2]int            // scratch: order re-sorted back to front
+	visible    [][2]int            // scratch: order minus chunks behind the camera
 	orderDirty bool
 }
 
@@ -356,40 +363,50 @@ func (w *World) EnsureChunksAround(worldX, worldZ float32) {
 
 // Render draws all loaded chunks: opaque geometry first so the depth buffer
 // is complete, then transparent faces back to front.
-func (w *World) Render(camPos rl.Vector3) {
+func (w *World) Render(cam rl.Camera3D) {
 	w.refreshOrder()
 
+	// Horizontal forward vector, for the behind-camera cull below.
+	fx := cam.Target.X - cam.Position.X
+	fz := cam.Target.Z - cam.Position.Z
+	if l := float32(math.Sqrt(float64(fx*fx + fz*fz))); l > 0.0001 {
+		fx /= l
+		fz /= l
+	}
+
+	// Visible set for this frame. A chunk is dropped only when its whole
+	// bounding circle lies behind the camera plane, so this never culls
+	// anything on screen regardless of FOV.
+	w.visible = w.visible[:0]
 	for _, key := range w.order {
 		c := w.chunks[key]
 		if c == nil || !c.loaded {
 			continue
 		}
-		w.drawFaces(c, c.VisibleOpaque)
-	}
-
-	// Chunks sorted far-to-near for blending. Ranging over w.chunks directly
-	// would reorder them every frame, since Go randomises map iteration —
-	// that alone made the water surface flicker.
-	w.tOrder = append(w.tOrder[:0], w.order...)
-	sort.Slice(w.tOrder, func(i, j int) bool {
-		return chunkDistSq(w.tOrder[i], camPos) > chunkDistSq(w.tOrder[j], camPos)
-	})
-	for _, key := range w.tOrder {
-		c := w.chunks[key]
-		if c == nil || !c.loaded {
+		dx := float32(key[0]*ChunkWidth) + ChunkWidth/2 - cam.Position.X
+		dz := float32(key[1]*ChunkDepth) + ChunkDepth/2 - cam.Position.Z
+		if dx*fx+dz*fz < -chunkRadius {
 			continue
 		}
-		w.drawFaces(c, c.VisibleTransparent)
+		w.visible = append(w.visible, key)
+	}
+
+	for _, key := range w.visible {
+		w.drawFaces(w.chunks[key], w.chunks[key].VisibleOpaque)
+	}
+
+	// Sorted far-to-near for blending. Ranging over w.chunks directly would
+	// reorder them every frame, since Go randomises map iteration — that alone
+	// made the water surface flicker.
+	w.tOrder = append(w.tOrder[:0], w.visible...)
+	sort.Slice(w.tOrder, func(i, j int) bool {
+		return chunkDistSq(w.tOrder[i], cam.Position) > chunkDistSq(w.tOrder[j], cam.Position)
+	})
+	for _, key := range w.tOrder {
+		w.drawFaces(w.chunks[key], w.chunks[key].VisibleTransparent)
 	}
 }
 
-// drawFaces emits every face of one chunk as quads in a single immediate-mode
-// block. Quads are what raylib's render batch is built around -- its buffer is
-// sized and its overflow check aligned in multiples of 4 vertices -- so a batch
-// flush can only ever land on a face boundary. Emitting triangles instead lets
-// a flush land mid-primitive, after which every following primitive in the
-// batch is assembled from a shifted vertex triple, which showed up as large
-// spurious wedges across the terrain.
 // drawFaces draws one chunk's faces. Each face goes through a single
 // DrawTriangle3D pair rather than rl.Begin(rl.Quads)/rl.Vertex3f: this binding
 // is purego, so every rlgl call is an FFI crossing, and pushing vertices one at
