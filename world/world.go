@@ -47,12 +47,24 @@ func NewWorld(seed int64) *World {
 		chunks:     make(map[[2]int]*Chunk),
 		noise:      NewNoise(seed),
 		seed:       seed,
-		loadDist:   1, // 3x3 = 9 chunks
+		loadDist:   2, // 5x5 = 25 chunks, ~40 blocks of view
 		generating: make(map[[2]int]struct{}),
-		genResults: make(chan *Chunk, 16),
+		// Sized above the largest window (5x5 = 25) so a burst of finished
+		// generations never parks a worker goroutine on the send.
+		genResults: make(chan *Chunk, 32),
 		dirtySet:   make(map[[2]int]struct{}),
 	}
 	return w
+}
+
+// floorDiv divides rounding toward negative infinity. Go's / truncates toward
+// zero, which puts everything west or north of the origin one chunk off.
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }
 
 // GroundHeight returns the Y of the highest solid block near (wx, wz) and
@@ -249,14 +261,8 @@ func (w *World) generateTerrain(c *Chunk) {
 
 // GetBlock returns the block at world coordinates.
 func (w *World) GetBlock(wx, wy, wz int) blocks.BlockType {
-	cx := wx / ChunkWidth
-	if wx < 0 {
-		cx = (wx+1)/ChunkWidth - 1
-	}
-	cz := wz / ChunkDepth
-	if wz < 0 {
-		cz = (wz+1)/ChunkDepth - 1
-	}
+	cx := floorDiv(wx, ChunkWidth)
+	cz := floorDiv(wz, ChunkDepth)
 
 	c := w.GetChunk(cx, cz)
 	if c == nil || !c.loaded {
@@ -281,14 +287,8 @@ func (w *World) GetBlock(wx, wy, wz int) blocks.BlockType {
 
 // SetBlock sets a block at world coordinates and rebuilds affected chunks.
 func (w *World) SetBlock(wx, wy, wz int, b blocks.BlockType) {
-	cx := wx / ChunkWidth
-	if wx < 0 {
-		cx = (wx+1)/ChunkWidth - 1
-	}
-	cz := wz / ChunkDepth
-	if wz < 0 {
-		cz = (wz+1)/ChunkDepth - 1
-	}
+	cx := floorDiv(wx, ChunkWidth)
+	cz := floorDiv(wz, ChunkDepth)
 
 	c := w.GetChunk(cx, cz)
 	if c == nil {
@@ -332,14 +332,12 @@ func (w *World) SetBlock(wx, wy, wz int, b blocks.BlockType) {
 
 // EnsureChunksAround loads chunks within range and unloads distant ones.
 func (w *World) EnsureChunksAround(worldX, worldZ float32) {
-	cx := int(worldX) / ChunkWidth
-	cz := int(worldZ) / ChunkDepth
-	if worldX < 0 {
-		cx = (int(worldX)+1)/ChunkWidth - 1
-	}
-	if worldZ < 0 {
-		cz = (int(worldZ)+1)/ChunkDepth - 1
-	}
+	// Floor before converting to int: int() truncates toward zero, so at
+	// worldX = -16.5 it yields -16 and the chunk maths below then lands on
+	// -1 instead of -2. The window would trail the player by a block on
+	// every negative chunk border.
+	cx := floorDiv(int(math.Floor(float64(worldX))), ChunkWidth)
+	cz := floorDiv(int(math.Floor(float64(worldZ))), ChunkDepth)
 
 	for dx := -w.loadDist; dx <= w.loadDist; dx++ {
 		for dz := -w.loadDist; dz <= w.loadDist; dz++ {

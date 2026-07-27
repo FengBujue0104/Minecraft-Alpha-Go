@@ -26,6 +26,27 @@ const (
 	MaxStepBlocks float32 = 0.9
 	// MaxSinkSpeed limits downward speed in water.
 	MaxSinkSpeed float32 = 3.0
+	// FlightSpeed is deliberately independent from running speed so vertical
+	// flight feels predictable even while sprint is held.
+	FlightSpeed float32 = 8.0
+)
+
+// HotbarItems is the fixed nine-slot inventory shown by the HUD. Water is a
+// bucket tool: it places water with right-click and only removes water with
+// left-click.
+var HotbarItems = []blocks.BlockType{
+	blocks.Stone, blocks.Dirt, blocks.Grass,
+	blocks.Wood, blocks.Leaves, blocks.Sand,
+	blocks.Glass, blocks.Bedrock, blocks.Water,
+}
+
+// BlockAction identifies a successful world edit for the audio system.
+type BlockAction uint8
+
+const (
+	NoBlockAction BlockAction = iota
+	BreakBlock
+	PlaceBlock
 )
 
 // Player holds all player state including camera and physics.
@@ -36,11 +57,13 @@ type Player struct {
 	Yaw, Pitch     float32
 	OnGround       bool
 	InWater        bool
-	skipMouse      bool     // skip mouse delta for one frame after cursor re-hide
+	Flying         bool
+	skipMouse      bool    // skip mouse delta for one frame after cursor re-hide
 	waterExitTimer float32 // grace period after leaving water for continued swimming
 	SelectedBlock  blocks.BlockType
-	TargetBlockPos [3]int   // World pos of the block being looked at
-	TargetFace     int      // Face the player is looking at (-1 if none)
+	TargetBlockPos [3]int // World pos of the block being looked at
+	TargetFace     int    // Face the player is looking at (-1 if none)
+	lastAction     BlockAction
 }
 
 // NewPlayer creates a player at the given position.
@@ -52,10 +75,10 @@ func NewPlayer(x, y, z float32) *Player {
 		Pitch:         0,
 	}
 	p.Camera = rl.Camera3D{
-		Position: rl.NewVector3(x, y+EyeHeight, z),
-		Target:   rl.NewVector3(x+1, y+EyeHeight, z), // yaw=0 faces +X
-		Up:       rl.NewVector3(0, 1, 0),
-		Fovy:     70,
+		Position:   rl.NewVector3(x, y+EyeHeight, z),
+		Target:     rl.NewVector3(x+1, y+EyeHeight, z), // yaw=0 faces +X
+		Up:         rl.NewVector3(0, 1, 0),
+		Fovy:       70,
 		Projection: rl.CameraPerspective,
 	}
 	return p
@@ -64,6 +87,31 @@ func NewPlayer(x, y, z float32) *Player {
 // SkipNextMouseFrame tells the player to ignore the next mouse delta.
 func (p *Player) SkipNextMouseFrame() {
 	p.skipMouse = true
+}
+
+// SelectHotbarSlot selects a zero-based hotbar slot. It is kept separate from
+// raylib input so the HUD and tests share exactly the same inventory mapping.
+func (p *Player) SelectHotbarSlot(slot int) {
+	if slot >= 0 && slot < len(HotbarItems) {
+		p.SelectedBlock = HotbarItems[slot]
+	}
+}
+
+// SelectedHotbarSlot returns the selected zero-based slot.
+func (p *Player) SelectedHotbarSlot() int {
+	for i, item := range HotbarItems {
+		if item == p.SelectedBlock {
+			return i
+		}
+	}
+	return 0
+}
+
+// ConsumeBlockAction returns and clears the most recent successful block edit.
+func (p *Player) ConsumeBlockAction() BlockAction {
+	action := p.lastAction
+	p.lastAction = NoBlockAction
+	return action
 }
 
 // Update handles per-frame input, camera, and block interaction.
@@ -103,6 +151,14 @@ func (p *Player) Update(w *world.World) {
 		p.waterExitTimer -= rl.GetFrameTime()
 	}
 
+	if rl.IsKeyPressed(rl.KeyF) {
+		p.Flying = !p.Flying
+		p.Velocity.Y = 0
+		if p.Flying {
+			p.OnGround = false
+		}
+	}
+
 	// Movement input
 	moveDir := rl.Vector3{}
 	if rl.IsKeyDown(rl.KeyW) {
@@ -140,8 +196,17 @@ func (p *Player) Update(w *world.World) {
 		speed *= 1.5
 	}
 
-	// Jump / swim
-	if p.InWater || p.waterExitTimer > 0 {
+	// Jump / swim / flight. Flight uses held keys rather than edge-triggered
+	// presses, allowing continuous ascent and descent.
+	if p.Flying {
+		if rl.IsKeyDown(rl.KeySpace) {
+			p.Velocity.Y = FlightSpeed
+		} else if rl.IsKeyDown(rl.KeyLeftControl) {
+			p.Velocity.Y = -FlightSpeed
+		} else {
+			p.Velocity.Y = 0
+		}
+	} else if p.InWater || p.waterExitTimer > 0 {
 		if rl.IsKeyDown(rl.KeySpace) {
 			p.Velocity.Y = JumpVelocity * 0.55
 		}
@@ -177,15 +242,20 @@ func (p *Player) Update(w *world.World) {
 		p.Camera.Position.Z+lookDir.Z,
 	)
 
-	// Ray casting for block selection
-	p.updateBlockSelection(w)
+	p.updateHotbarSelection()
 
-	// Place/Break blocks
+	// Ray casting and block interaction happen after item selection so pressing
+	// a number and clicking in one frame uses the newly selected tool.
+	p.updateBlockSelection(w)
 	p.handleBlockActions(w)
 }
 
 // StepPhysics applies gravity and collision resolution at a fixed timestep.
 func (p *Player) StepPhysics(w *world.World, dt float32) {
+	if p.Flying {
+		p.moveWithCollision(w, dt)
+		return
+	}
 	if p.InWater {
 		if !p.OnGround {
 			p.Velocity.Y -= Gravity * dt * 0.3
@@ -409,7 +479,10 @@ func (p *Player) updateBlockSelection(w *world.World) {
 
 	for step := 0; step < maxSteps; step++ {
 		b := w.GetBlock(vx, vy, vz)
-		if b != blocks.Air && b != blocks.Water {
+		// Water is normally transparent to selection so the player can build
+		// onto lake beds. The bucket specifically targets water so it can
+		// remove it with its left-click action.
+		if b != blocks.Air && (b != blocks.Water || p.SelectedBlock == blocks.Water) {
 			p.TargetBlockPos = [3]int{vx, vy, vz}
 			p.TargetFace = face
 			return
@@ -458,7 +531,16 @@ func (p *Player) updateBlockSelection(w *world.World) {
 func (p *Player) handleBlockActions(w *world.World) {
 	// Break block - left mouse button
 	if rl.IsMouseButtonPressed(rl.MouseLeftButton) && p.TargetFace >= 0 {
-		w.SetBlock(p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2], blocks.Air)
+		target := w.GetBlock(p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2])
+		if p.SelectedBlock == blocks.Water {
+			if target == blocks.Water {
+				w.SetBlock(p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2], blocks.Air)
+				p.lastAction = BreakBlock
+			}
+		} else if target != blocks.Water {
+			w.SetBlock(p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2], blocks.Air)
+			p.lastAction = BreakBlock
+		}
 	}
 
 	// Place block - right mouse button
@@ -498,28 +580,35 @@ func (p *Player) handleBlockActions(w *world.World) {
 			}
 		}
 
-		if w.GetBlock(px, py, pz) == blocks.Air {
+		// Anything non-solid (air or water) can be built over. The ray passes
+		// through water, so water can never be targeted directly; refusing to
+		// overwrite it too would make a misplaced block of water permanent and
+		// leave lakes unbuildable.
+		if !w.GetBlock(px, py, pz).IsSolid() {
 			w.SetBlock(px, py, pz, p.SelectedBlock)
+			p.lastAction = PlaceBlock
+		}
+	}
+}
+
+func (p *Player) updateHotbarSelection() {
+	// Number keys always select their matching visible slot.
+	for i := 0; i < len(HotbarItems); i++ {
+		if rl.IsKeyPressed(rl.KeyOne + int32(i)) {
+			p.SelectHotbarSlot(i)
+			return
 		}
 	}
 
-	// Scroll to change selected block
+	// Raylib reports a positive value when the wheel is rolled away from the
+	// player. Treat that as moving left through the bar, matching the requested
+	// physical scroll direction.
 	scroll := rl.GetMouseWheelMove()
 	if scroll != 0 {
-		blockCycle := []blocks.BlockType{
-			blocks.Stone, blocks.Dirt, blocks.Grass,
-			blocks.Wood, blocks.Leaves, blocks.Sand,
-			blocks.Glass, blocks.Water, blocks.Bedrock,
+		idx := (p.SelectedHotbarSlot() - int(scroll)) % len(HotbarItems)
+		if idx < 0 {
+			idx += len(HotbarItems)
 		}
-		for i, b := range blockCycle {
-			if b == p.SelectedBlock {
-				idx := (i + int(scroll)) % len(blockCycle)
-				if idx < 0 {
-					idx += len(blockCycle)
-				}
-				p.SelectedBlock = blockCycle[idx]
-				break
-			}
-		}
+		p.SelectHotbarSlot(idx)
 	}
 }

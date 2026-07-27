@@ -114,3 +114,38 @@ func TestCornerCollisionAtMiddleLayer(t *testing.T) {
 		t.Error("block at a corner column in the middle layer was not detected")
 	}
 }
+
+func TestHotbarSlotSelection(t *testing.T) {
+	p := NewPlayer(0, 100, 0)
+	p.SelectHotbarSlot(8)
+	if p.SelectedBlock != blocks.Water {
+		t.Fatalf("slot 9 selected %v, want the water bucket", p.SelectedBlock)
+	}
+	if slot := p.SelectedHotbarSlot(); slot != 8 {
+		t.Fatalf("water bucket reports slot %d, want 8", slot)
+	}
+
+	// Invalid slots must not corrupt the selected item.
+	p.SelectHotbarSlot(-1)
+	p.SelectHotbarSlot(len(HotbarItems))
+	if p.SelectedBlock != blocks.Water {
+		t.Fatalf("invalid slot changed selected item to %v", p.SelectedBlock)
+	}
+}
+
+func TestFlightPhysicsSkipsGravity(t *testing.T) {
+	w := testWorld(t)
+	p := NewPlayer(0.5, 110, 0.5)
+	p.Flying = true
+	p.Velocity.Y = FlightSpeed
+	before := p.Position.Y
+	p.StepPhysics(w, testDt)
+
+	want := before + FlightSpeed*testDt
+	if math.Abs(float64(p.Position.Y-want)) > 0.0001 {
+		t.Fatalf("flight vertical motion %.4f, want %.4f; gravity should not apply", p.Position.Y, want)
+	}
+	if p.Velocity.Y != FlightSpeed {
+		t.Fatalf("flight velocity changed to %.4f", p.Velocity.Y)
+	}
+}

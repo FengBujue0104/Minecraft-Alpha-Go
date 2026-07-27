@@ -70,12 +70,29 @@ func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
 					nlx, nly, nlz := lx+d[0], ly+d[1], lz+d[2]
 
 					var neighbor blocks.BlockType
-					var neighborExists bool
+					known := false  // the adjacent block's type is known
+					sealed := false // nothing can ever see this face
 
-					if nlx >= 0 && nlx < ChunkWidth && nly >= 0 && nly < ChunkHeight && nlz >= 0 && nlz < ChunkDepth {
+					switch {
+					case nlx >= 0 && nlx < ChunkWidth && nly >= 0 && nly < ChunkHeight && nlz >= 0 && nlz < ChunkDepth:
 						neighbor = c.Blocks[nlx][nly][nlz]
-						neighborExists = true
-					} else if worldGet != nil && nly >= 0 && nly < ChunkHeight {
+						known = true
+
+					case nly < 0:
+						// World floor. moveWithCollision clamps the player to
+						// y >= 0, so the underside of y=0 is unreachable.
+						sealed = true
+
+					case nly >= ChunkHeight:
+						// Sky: stay exposed, or a tower built to y=127 loses
+						// its top face. This is the one unbounded direction.
+
+					case worldGet == nil:
+						// No way to resolve the neighbour; take the
+						// conservative side rather than emitting a wall.
+						sealed = true
+
+					default:
 						ncx, ncz := c.CX, c.CZ
 						if nlx < 0 {
 							ncx--
@@ -91,15 +108,30 @@ func (c *Chunk) ComputeVisibility(worldGet func(cx, cz int) *Chunk) {
 							ncz++
 							nlz = 0
 						}
-						if nc := worldGet(ncx, ncz); nc != nil && nc.loaded {
+						// A chunk in w.chunks is always loaded: insertChunk
+						// sets the flag before the map write.
+						if nc := worldGet(ncx, ncz); nc != nil {
 							if nb, ok := nc.GetBlock(nlx, nly, nlz); ok {
 								neighbor = nb
-								neighborExists = true
+								known = true
 							}
+						} else {
+							// Unloaded neighbour. The face points outward off
+							// the edge of the loaded window and the player is
+							// always inside it, so it can never be seen —
+							// emitting it used to cost a solid 16-wide wall
+							// per exposed chunk border. insertChunk and
+							// UnloadChunk both markDirty the four neighbours,
+							// so this is re-evaluated when that changes.
+							sealed = true
 						}
 					}
 
-					if !neighborExists || neighbor == blocks.Air || (neighbor.IsTransparent() && neighbor != b) {
+					if sealed {
+						continue
+					}
+
+					if !known || neighbor == blocks.Air || (neighbor.IsTransparent() && neighbor != b) {
 						vf := VisibleFace{
 							LocalX: lx,
 							LocalY: ly,
