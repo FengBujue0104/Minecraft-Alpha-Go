@@ -51,6 +51,10 @@ case "$TARGET" in
     LIB=canarye PKG="./android/canary/canarye"
     MANIFEST="android/canary/AndroidManifestCanaryE.xml"; APK_NAME="canary-e-debug.apk"
     ;;
+  canaryF)
+    LIB=canaryf PKG="./android/canary/canaryf"
+    MANIFEST="android/canary/AndroidManifestCanaryF.xml"; APK_NAME="canary-f-debug.apk"
+    ;;
   game)
     ;;
   *)

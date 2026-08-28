@@ -16,6 +16,8 @@ func init() {
 	rl.SetMain(gameMain)
 }
 
+func main() {}
+
 func gameMain() {
 	rl.SetConfigFlags(rl.FlagVsyncHint)
 	rl.InitWindow(0, 0, "Minecraft Go - Android Demo")
