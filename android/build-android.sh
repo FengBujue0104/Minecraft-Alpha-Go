@@ -38,6 +38,11 @@ case "$TARGET" in
     LIB=canaryb PKG="./android/canary/canaryb"
     MANIFEST="android/canary/AndroidManifestCanaryB.xml"; APK_NAME="canary-b-debug.apk"
     ;;
+  canaryC)
+    # 独立小模块（go 1.21），便于日后用 GOTOOLCHAIN 换版本对比。
+    MODE=c-shared-standalone LIB=canaryc PKG="android/canary/canaryc"
+    MANIFEST="android/canary/AndroidManifestCanaryC.xml"; APK_NAME="canary-c-debug.apk"
+    ;;
   game)
     ;;
   *)
@@ -51,6 +56,12 @@ echo "==> [1/5] 编译 native 库 (lib$LIB.so, $ABI)"
 if [ "$MODE" = "c" ]; then
   # 纯 C：NDK clang 直接编译，链接系统库
   "$CC" -shared -fPIC -O2 "$SRC" -o "$BUILD_DIR/lib$LIB.so" -llog -landroid
+elif [ "$MODE" = "c-shared-standalone" ]; then
+  # 独立模块：在子目录内构建（尊重外部传入的 GOTOOLCHAIN 以便换版本对比）
+  (cd "$PKG" && CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$CC" \
+    go build -buildmode=c-shared -buildvcs=false \
+    -ldflags "-extldflags '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
+    -o "$BUILD_DIR/lib$LIB.so" .)
 else
   # 16KB 页对齐：NDK r26 默认 4KB，在 16KB 页内核的新设备（Pixel 8/9 等）上
   # 这类 .so 会加载即崩；显式升到 16384 对两种设备都兼容。
