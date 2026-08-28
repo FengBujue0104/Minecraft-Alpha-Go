@@ -42,8 +42,11 @@ mkdir -p "$BUILD_DIR"
 
 echo "==> [1/5] Go 交叉编译 ($GO_PKG -> libgame.so, $ABI)"
 cd "$REPO_ROOT"
+# 16KB 页对齐：NDK r26 默认 4KB，在 16KB 页内核的新设备（Pixel 8/9 等）上
+# 这类 .so 会加载即崩；显式升到 16384 对两种设备都兼容。
 CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$CC" \
   go build -buildmode=c-shared -buildvcs=false -trimpath \
+  -ldflags "-extldflags '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
   -o "$BUILD_DIR/libgame.so" "$GO_PKG"
 
 echo "==> [2/5] aapt2 生成基础 APK"

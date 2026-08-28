@@ -128,11 +128,16 @@ func main() {
 	// Panic recovery: report the stack, and persist it if we can.
 	defer func() {
 		if r := recover(); r != nil {
+			stack := string(debug.Stack())
 			// Print first — if creating the log fails, the stack is still
 			// visible rather than silently lost.
-			fmt.Printf("PANIC: %v\n\nStack:\n%s\n", r, debug.Stack())
+			fmt.Printf("PANIC: %v\n\nStack:\n%s\n", r, stack)
+			// Android: stdout is invisible; TraceLog routes to logcat
+			// (rcore_android uses __android_log_print).
+			rl.TraceLog(rl.LogError, "PANIC: %v", r)
+			rl.TraceLog(rl.LogError, "Stack:\n%s", stack)
 			if f, err := os.Create("crash.log"); err == nil {
-				fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, debug.Stack())
+				fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, stack)
 				f.Close()
 				fmt.Println("Wrote crash.log")
 			}
