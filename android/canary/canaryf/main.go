@@ -42,13 +42,25 @@ static int waitWindow(int timeoutMs) {
 static void paintScreen(int r, int g, int b) {
 	struct android_app* app = GetAndroidApp();
 	if (app == NULL || app->window == NULL) return;
+	// 显式统一为 RGBA8888：若缓冲区实为 RGB565 等 2 字节格式，按 4 字节
+	// uint32 逐像素写会越界 2 倍直接 SIGSEGV（疑似 K70 秒崩的元凶）。
+	ANativeWindow_setBuffersGeometry(app->window, 0, 0, WINDOW_FORMAT_RGBA_8888);
 	ANativeWindow_Buffer buf;
 	if (ANativeWindow_lock(app->window, &buf, NULL) != 0) return;
-	uint32_t c = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
-	uint32_t* px = (uint32_t*)buf.bits;
-	for (int y = 0; y < buf.height; y++) {
-		uint32_t* line = px + (size_t)y * buf.stride;
-		for (int x = 0; x < buf.width; x++) line[x] = c;
+	if (buf.format == WINDOW_FORMAT_RGBA_8888 || buf.format == WINDOW_FORMAT_RGBX_8888) {
+		uint32_t c = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+		uint32_t* px = (uint32_t*)buf.bits;
+		for (int y = 0; y < buf.height; y++) {
+			uint32_t* line = px + (size_t)y * buf.stride;
+			for (int x = 0; x < buf.width; x++) line[x] = c;
+		}
+	} else if (buf.format == WINDOW_FORMAT_RGB_565) {
+		uint16_t c = (uint16_t)(((uint16_t)(r >> 3) << 11) | ((uint16_t)(g >> 2) << 5) | (uint16_t)(b >> 3));
+		uint16_t* px = (uint16_t*)buf.bits;
+		for (int y = 0; y < buf.height; y++) {
+			uint16_t* line = px + (size_t)y * buf.stride;
+			for (int x = 0; x < buf.width; x++) line[x] = c;
+		}
 	}
 	ANativeWindow_unlockAndPost(app->window);
 }
