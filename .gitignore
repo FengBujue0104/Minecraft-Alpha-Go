@@ -1,3 +1,5 @@
 mc-go.exe
 *.exe
 crash.log
+android/build/
+*.apk

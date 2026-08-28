@@ -51,6 +51,13 @@ func (o *pauseOverlay) Update(dt float32) {
 	}
 }
 
+// Android 的 c-shared 构建不会执行 main()：raylib 的 native_app_glue 在库加载
+// 后回调 android_run()，后者调用 SetMain 注册的函数。桌面端 SetMain 是空
+// stub，main() 仍由 Go 运行时直接执行，两条路径共用同一个入口。
+func init() {
+	rl.SetMain(main)
+}
+
 func main() {
 	// Panic recovery: report the stack, and persist it if we can.
 	defer func() {
