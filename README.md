@@ -12,6 +12,7 @@
 - 水桶工具：右键放水，左键移除水
 - ESC 半透明暂停界面与播放/暂停过渡动画
 - Windows 游戏窗口自动屏蔽中文输入法候选和组合输入
+- 安卓触屏版：虚拟摇杆 + 手势操作（见 `android/`，`android-port` 分支）
 
 ## 操作
 
@@ -28,6 +29,19 @@
 | `1`–`9` / 鼠标滚轮 | 切换快捷栏物品 |
 | `Esc` | 暂停 / 继续 |
 | `F1` | 显示 / 隐藏 HUD |
+
+### 安卓触屏
+
+| 触屏操作 | 功能 |
+| --- | --- |
+| 左下虚拟摇杆 | 移动，推到边缘冲刺 |
+| 右半屏滑动 | 转动视角 |
+| 轻点屏幕 | 破坏准星指向的方块 |
+| 长按屏幕 | 放置当前物品 |
+| 跳跃按钮 | 跳跃；按住上升/游泳上浮 |
+| `FLY` 按钮 | 开关飞行模式，飞行时出现下降按钮 |
+| 点快捷栏槽位 | 选择物品 |
+| 右上按钮 / 系统返回键 | 暂停；暂停时点中央按钮继续 |
 
 ## 构建与运行
 
@@ -50,6 +64,20 @@ go build .
 go run .
 ```
 
+### 安卓（arm64 APK）
+
+需要 Android SDK + **NDK r26**（r27 暂不支持），并设置 `ANDROID_SDK_ROOT`：
+
+```bash
+android/build-android.sh demo   # 冒烟测试 demo（旋转立方体 + 触点显示）
+android/build-android.sh game   # 完整游戏
+# 产物: android/build/mcgo-debug.apk / mcgo-demo-debug.apk
+```
+
+打包不走 Gradle：NativeActivity + `hasCode=false` 的应用没有 Java 代码，
+脚本直接用 build-tools 的 `aapt2`/`zipalign`/`apksigner` 手工组装签名，
+对构建机内存友好。
+
 ## 验证
 
 ```powershell
@@ -60,9 +88,11 @@ go vet ./...
 ## 项目结构
 
 ```text
-main.go       游戏循环、HUD、暂停界面
+main.go       游戏循环、HUD、暂停界面、触屏布局与控件绘制
 blocks/       方块类型、颜色与碰撞属性
 world/        区块生命周期、地形生成与渲染
-player/       输入、相机、物理、射线检测与方块交互
+player/       输入消费、相机、物理、射线检测与方块交互
+input/        输入抽象：桌面键盘/鼠标适配 + 安卓多点触控路由
 audio/        程序生成的放置与破坏音效
+android/      安卓壳工程：Manifest、构建脚本与冒烟测试 demo
 ```

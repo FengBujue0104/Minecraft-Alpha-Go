@@ -158,3 +158,71 @@ Base height from 4-octave noise (persistence 0.5, lacunarity 2.0) at scale 0.008
 ## Note on AGENTS.md
 
 `AGENTS.md` predates the fixes recorded in the git history and is now substantially wrong — among other things it describes a CGo build requiring a manually supplied `raylib.dll`, and places `ComputeVisibility` plus a neighbour rebuild inside `ProcessGenerations`. Prefer this file. It should be updated or removed rather than left to drift further.
+
+## Android port (android-port branch)
+
+The Android build keeps every gameplay system and shares all of `world/`,
+`blocks/`, `audio/` and the physics half of `player/` with desktop. The
+platform seam is intentionally narrow:
+
+### Entry point
+
+The c-shared Android build never executes `main()`; raylib's native_app_glue
+calls `android_run()` → whatever `rl.SetMain` registered. `init()` in
+`main.go` registers `main` itself. Desktop `SetMain` is a no-op stub, so the
+runtime still calls `main()` directly there. One entry point, both platforms.
+
+### Input goes through mc-go/input
+
+`player.Update` consumes an `input.State` snapshot; it never reads raylib
+input globals. Desktop reads keys/mouse in `input/input_desktop.go` — a 1:1
+translation of the pre-port direct reads. Android routes multi-touch in
+`input/input_android.go` by touch ID (not index): joystick zone, action
+buttons, hotbar slots, pause button, everything else is the look/gesture
+area (drag = look, tap < 0.25s = break, hold ≥ 0.4s = place). Raylib maps
+touch[0] to the mouse, but that only covers one finger — move+look needs
+true multi-touch, which is why the router exists. Android BACK arrives as
+`rl.IsKeyPressed(rl.KeyBack)` and toggles pause.
+
+`State` preserves edge-vs-held semantics explicitly (`JumpPressed` vs
+`JumpHeld` etc.). Space on desktop was both — the touch jump button keeps
+the same duality.
+
+### Layout is shared, not duplicated
+
+`buildLayout` in `main.go` computes every touch hitbox (joystick, buttons,
+hotbar slots, pause/resume buttons) from the live window size each frame;
+`input.Read` hit-tests against the same `input.Layout` the HUD draws with.
+Everything scales from height with a 720p baseline; at 1280x720 the formulas
+reproduce the old hardcoded constants exactly, so desktop rendering is
+unchanged. Touch builds enforce minimum hitbox sizes (64px slots, 84px
+buttons). The desktop/android switch is the `touchControls` const
+(`touch_desktop.go` / `touch_android.go` build-tag pair).
+
+### Player movement normalization
+
+`Update` only normalizes horizontal movement when its length exceeds 1.
+Keyboard still snaps to full speed; an analog joystick keeps partial
+deflection (walk slowly by easing the stick). Pushing the stick past 92%
+sets `Run`.
+
+### Building for Android
+
+`android/build-android.sh demo|game` cross-compiles with NDK r26 clang
+(`CGO_ENABLED=1 GOOS=android GOARCH=arm64 go build -buildmode=c-shared`),
+then hand-packs the APK with aapt2/zipalign/apksigner — no Gradle. The app
+is a pure NativeActivity (`hasCode=false`, `android.app.lib_name=game`), so
+there is no Java/dex at all. NDK 27 is known-broken upstream (see
+raysan5/raylib#4166); stay on r26. `android/demo` is a build-chain smoke
+test (spinning cube + touch readout) kept separate from the game.
+
+### Deliberately unchanged
+
+The chunk-generation goroutine still never touches raylib (it only computes
+terrain and feeds `genResults`), which is what makes it safe on Android
+unchanged. `audio/`'s in-memory wave synthesis is platform-agnostic; the
+`runtime.KeepAlive` guard in `NewWave` remains load-bearing. IME handling
+compiles to the `ime_other.go` stubs on Android. Rendering is still
+per-face `DrawTriangle3D` — no custom GPU resources means EGL context loss
+(OpenGL pause/resume on Android) cannot orphan anything; if a per-chunk
+mesh port lands later it must handle context loss explicitly.
