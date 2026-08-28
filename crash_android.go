@@ -33,10 +33,11 @@ func initCrashLog() {
 	}
 }
 
-// logLocal 同时输出到 stdout 和私有目录 crash.log。安卓上 stdout 不可见，
-// 私有文件是能离线带回的黑匣子；关键路径的里程碑让"死在哪个阶段"可见。
+// logLocal 同时输出到 stdout、私有目录 crash.log 和屏上里程碑镜像
+// （main.go 的 drawMilestones 会把它画出来，无 adb 也能看到死在哪个阶段）。
 func logLocal(msg string) {
 	fmt.Println(msg)
+	startupMilestones = append(startupMilestones, msg)
 	if crashLogPath == "" {
 		return
 	}

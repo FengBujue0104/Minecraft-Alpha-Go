@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
@@ -124,6 +125,41 @@ func buildLayout(l *input.Layout) {
 	l.Slop = float32(14) * scale
 }
 
+// startupMilestones 是启动黑匣子的屏上镜像：logLocal 记录的每条里程碑
+// 在进入主循环前直接画出来，无 adb 环境也能看到死在哪个阶段。
+var startupMilestones []string
+
+func drawMilestones() {
+	if !rl.IsWindowReady() {
+		return
+	}
+	rl.BeginDrawing()
+	rl.ClearBackground(rl.Black)
+	for i := 0; i < len(startupMilestones) && i < 30; i++ {
+		rl.DrawText(startupMilestones[i], 12, 12+int32(i)*16, 12, rl.Green)
+	}
+	rl.EndDrawing()
+}
+
+// drawPanicOnScreen 把 panic 堆栈画成红屏并停留，供拍照回传。
+func drawPanicOnScreen(r interface{}, stack string) {
+	if !rl.IsWindowReady() {
+		return
+	}
+	defer func() { _ = recover() }() // 显示失败也不能掩盖原始 panic
+	rl.BeginDrawing()
+	rl.ClearBackground(rl.NewColor(120, 10, 10, 255))
+	lines := strings.Split("PANIC: "+fmt.Sprint(r)+"\n"+stack, "\n")
+	for i := 0; i < len(lines) && i < 45; i++ {
+		l := lines[i]
+		if len(l) > 90 {
+			l = l[:90]
+		}
+		rl.DrawText(l, 10, 10+int32(i)*14, 12, rl.White)
+	}
+	rl.EndDrawing()
+}
+
 func main() {
 	// android_main 已把 android_app 装好，这里能拿到私有目录路径。
 	initCrashLog()
@@ -137,6 +173,8 @@ func main() {
 			// the app-private crash.log black box.
 			rl.TraceLog(rl.LogError, "PANIC: %v", r)
 			logLocal("PANIC: " + fmt.Sprint(r) + "\n" + stack)
+			drawPanicOnScreen(r, stack)
+			time.Sleep(20 * time.Second) // 红屏停留，供拍照回传
 			if f, err := os.Create("crash.log"); err == nil {
 				fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, stack)
 				f.Close()
@@ -150,6 +188,7 @@ func main() {
 	logLocal("main: before InitWindow")
 	rl.InitWindow(WindowWidth, WindowHeight, WindowTitle)
 	logLocal("main: window ready")
+	drawMilestones()
 	defer rl.CloseWindow()
 	disableIME()
 	defer restoreIME()
@@ -165,11 +204,13 @@ func main() {
 	effects := audio.New()
 	defer effects.Close()
 	logLocal("main: audio ok")
+	drawMilestones()
 
 	seed := time.Now().UnixNano()
 	fmt.Printf("Seed: %d\n", seed)
 	w := world.NewWorld(seed)
 	logLocal("main: world created")
+	drawMilestones()
 
 	spawnX := float32(0)
 	spawnZ := float32(0)
@@ -178,6 +219,7 @@ func main() {
 	w.EnsureChunksAround(spawnX, spawnZ)
 	w.FlushGenerations()
 	logLocal("main: initial chunks flushed")
+	drawMilestones()
 	fmt.Printf("Done! Loaded %d chunks.\n", w.ChunkCount())
 
 	// Stand on the surface. Falls back to a safe height only when no ground
@@ -190,6 +232,7 @@ func main() {
 	p := player.NewPlayer(spawnX, spawnY, spawnZ)
 	p.SkipNextMouseFrame() // initial cursor-disable spike
 	logLocal("main: player ready, entering loop")
+	drawMilestones()
 
 	showUI := true
 	physicsAccum := float32(0)

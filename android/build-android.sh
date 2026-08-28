@@ -43,10 +43,14 @@ case "$TARGET" in
     MODE=c-shared-standalone LIB=canaryc PKG="android/canary/canaryc"
     MANIFEST="android/canary/AndroidManifestCanaryC.xml"; APK_NAME="canary-c-debug.apk"
     ;;
+  canaryD)
+    LIB=canaryd PKG="./android/canary/canaryd"
+    MANIFEST="android/canary/AndroidManifestCanaryD.xml"; APK_NAME="canary-d-debug.apk"
+    ;;
   game)
     ;;
   *)
-    echo "未知目标: $TARGET (可选: game | demo | canaryA | canaryB)" >&2
+    echo "未知目标: $TARGET (可选: game | demo | canaryA | canaryB | canaryC | canaryD)" >&2
     exit 1
     ;;
 esac
