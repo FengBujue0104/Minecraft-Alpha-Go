@@ -6,6 +6,7 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 
 	"mc-go/blocks"
+	"mc-go/input"
 	"mc-go/world"
 )
 
@@ -114,10 +115,11 @@ func (p *Player) ConsumeBlockAction() BlockAction {
 	return action
 }
 
-// Update handles per-frame input, camera, and block interaction.
-func (p *Player) Update(w *world.World) {
-	// Mouse look — cap first-frame spike
-	mouseDelta := rl.GetMouseDelta()
+// Update handles per-frame input, camera, and block interaction. Input arrives
+// as a State snapshot so the same code serves keyboard/mouse and touch play.
+func (p *Player) Update(in input.State, w *world.World) {
+	// Look — cap first-frame spike
+	mouseDelta := rl.Vector2{X: in.LookDX, Y: in.LookDY}
 	if p.skipMouse {
 		mouseDelta = rl.Vector2{}
 		p.skipMouse = false
@@ -151,7 +153,7 @@ func (p *Player) Update(w *world.World) {
 		p.waterExitTimer -= rl.GetFrameTime()
 	}
 
-	if rl.IsKeyPressed(rl.KeyF) {
+	if in.FlyToggle {
 		p.Flying = !p.Flying
 		p.Velocity.Y = 0
 		if p.Flying {
@@ -160,23 +162,11 @@ func (p *Player) Update(w *world.World) {
 	}
 
 	// Movement input
-	moveDir := rl.Vector3{}
-	if rl.IsKeyDown(rl.KeyW) {
-		moveDir.X += 1
-	}
-	if rl.IsKeyDown(rl.KeyS) {
-		moveDir.X -= 1
-	}
-	if rl.IsKeyDown(rl.KeyA) {
-		moveDir.Z -= 1
-	}
-	if rl.IsKeyDown(rl.KeyD) {
-		moveDir.Z += 1
-	}
+	moveDir := rl.Vector3{X: in.MoveFwd, Z: in.MoveRight}
 
-	// Normalize horizontal movement
-	if moveDir.X != 0 || moveDir.Z != 0 {
-		length := float32(math.Sqrt(float64(moveDir.X*moveDir.X + moveDir.Z*moveDir.Z)))
+	// Normalize horizontal movement only above full deflection so keyboard
+	// stays all-or-nothing while an analog joystick keeps partial magnitudes.
+	if length := float32(math.Sqrt(float64(moveDir.X*moveDir.X + moveDir.Z*moveDir.Z))); length > 1 {
 		moveDir.X /= length
 		moveDir.Z /= length
 	}
@@ -190,32 +180,32 @@ func (p *Player) Update(w *world.World) {
 		Z: moveDir.X*sin + moveDir.Z*cos,
 	}
 
-	// Running (hold Shift to run)
+	// Running (sprint)
 	speed := MoveSpeed
-	if rl.IsKeyDown(rl.KeyLeftShift) {
+	if in.Run {
 		speed *= 1.5
 	}
 
-	// Jump / swim / flight. Flight uses held keys rather than edge-triggered
+	// Jump / swim / flight. Flight uses held input rather than edge-triggered
 	// presses, allowing continuous ascent and descent.
 	if p.Flying {
-		if rl.IsKeyDown(rl.KeySpace) {
+		if in.JumpHeld {
 			p.Velocity.Y = FlightSpeed
-		} else if rl.IsKeyDown(rl.KeyLeftControl) {
+		} else if in.DescendHeld {
 			p.Velocity.Y = -FlightSpeed
 		} else {
 			p.Velocity.Y = 0
 		}
 	} else if p.InWater || p.waterExitTimer > 0 {
-		if rl.IsKeyDown(rl.KeySpace) {
+		if in.JumpHeld {
 			p.Velocity.Y = JumpVelocity * 0.55
 		}
-		if rl.IsKeyPressed(rl.KeySpace) && p.OnGround {
+		if in.JumpPressed && p.OnGround {
 			p.Velocity.Y = JumpVelocity * 0.8
 			p.OnGround = false
 		}
 	} else {
-		if rl.IsKeyPressed(rl.KeySpace) && p.OnGround {
+		if in.JumpPressed && p.OnGround {
 			p.Velocity.Y = JumpVelocity
 			p.OnGround = false
 		}
@@ -242,12 +232,12 @@ func (p *Player) Update(w *world.World) {
 		p.Camera.Position.Z+lookDir.Z,
 	)
 
-	p.updateHotbarSelection()
+	p.updateHotbarSelection(in)
 
 	// Ray casting and block interaction happen after item selection so pressing
 	// a number and clicking in one frame uses the newly selected tool.
 	p.updateBlockSelection(w)
-	p.handleBlockActions(w)
+	p.handleBlockActions(in, w)
 }
 
 // StepPhysics applies gravity and collision resolution at a fixed timestep.
@@ -528,9 +518,9 @@ func (p *Player) updateBlockSelection(w *world.World) {
 	}
 }
 
-func (p *Player) handleBlockActions(w *world.World) {
-	// Break block - left mouse button
-	if rl.IsMouseButtonPressed(rl.MouseLeftButton) && p.TargetFace >= 0 {
+func (p *Player) handleBlockActions(in input.State, w *world.World) {
+	// Break block - left mouse button / touch tap
+	if in.BreakPressed && p.TargetFace >= 0 {
 		target := w.GetBlock(p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2])
 		if p.SelectedBlock == blocks.Water {
 			if target == blocks.Water {
@@ -543,8 +533,8 @@ func (p *Player) handleBlockActions(w *world.World) {
 		}
 	}
 
-	// Place block - right mouse button
-	if rl.IsMouseButtonPressed(rl.MouseRightButton) && p.TargetFace >= 0 {
+	// Place block - right mouse button / touch long-press
+	if in.PlacePressed && p.TargetFace >= 0 {
 		// Calculate placement position (adjacent to the hit face)
 		px, py, pz := p.TargetBlockPos[0], p.TargetBlockPos[1], p.TargetBlockPos[2]
 		switch p.TargetFace {
@@ -591,21 +581,19 @@ func (p *Player) handleBlockActions(w *world.World) {
 	}
 }
 
-func (p *Player) updateHotbarSelection() {
-	// Number keys always select their matching visible slot.
-	for i := 0; i < len(HotbarItems); i++ {
-		if rl.IsKeyPressed(rl.KeyOne + int32(i)) {
-			p.SelectHotbarSlot(i)
-			return
-		}
+func (p *Player) updateHotbarSelection(in input.State) {
+	// A direct slot selection (number keys on desktop, tapping a slot on
+	// touch) always wins.
+	if in.HotbarSlot >= 0 && in.HotbarSlot < len(HotbarItems) {
+		p.SelectHotbarSlot(in.HotbarSlot)
+		return
 	}
 
-	// Raylib reports a positive value when the wheel is rolled away from the
-	// player. Treat that as moving left through the bar, matching the requested
-	// physical scroll direction.
-	scroll := rl.GetMouseWheelMove()
-	if scroll != 0 {
-		idx := (p.SelectedHotbarSlot() - int(scroll)) % len(HotbarItems)
+	// A wheel roll away from the player is positive on desktop; treat that as
+	// moving left through the bar, matching the physical scroll direction.
+	if in.HotbarDelta != 0 {
+		scroll := in.HotbarDelta
+		idx := (p.SelectedHotbarSlot() - scroll) % len(HotbarItems)
 		if idx < 0 {
 			idx += len(HotbarItems)
 		}

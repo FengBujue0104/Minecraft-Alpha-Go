@@ -11,6 +11,7 @@ import (
 
 	"mc-go/audio"
 	"mc-go/blocks"
+	"mc-go/input"
 	"mc-go/player"
 	"mc-go/world"
 )
@@ -56,6 +57,71 @@ func (o *pauseOverlay) Update(dt float32) {
 // stub，main() 仍由 Go 运行时直接执行，两条路径共用同一个入口。
 func init() {
 	rl.SetMain(main)
+}
+
+// buildLayout 按当前窗口尺寸重建触屏控件命中区。缩放基于高度（设计基准
+// 720p），触屏时对最小命中尺寸设下限；桌面 1280x720 下所有值与原硬编码
+// 常数完全一致，保证桌面画面不变。
+func buildLayout(l *input.Layout) {
+	w := float32(rl.GetScreenWidth())
+	h := float32(rl.GetScreenHeight())
+	scale := h / 720
+	if scale < 0.75 {
+		scale = 0.75
+	}
+	if scale > 3 {
+		scale = 3
+	}
+
+	// 快捷栏：drawHotbar 与触点命中共用这一组矩形
+	slot := float32(52) * scale
+	gap := float32(4) * scale
+	if touchControls && slot < 64 {
+		slot = 64
+	}
+	count := float32(len(player.HotbarItems))
+	barWidth := count*slot + (count-1)*gap
+	startX := (w - barWidth) / 2
+	slotY := h - slot - 18*scale
+	l.HotbarSlots = l.HotbarSlots[:0]
+	for i := 0; i < len(player.HotbarItems); i++ {
+		l.HotbarSlots = append(l.HotbarSlots, rl.Rectangle{
+			X: startX + float32(i)*(slot+gap), Y: slotY, Width: slot, Height: slot,
+		})
+	}
+
+	pad := float32(26) * scale
+	btn := float32(76) * scale
+	if touchControls && btn < 84 {
+		btn = 84
+	}
+	small := float32(48) * scale
+
+	l.PauseBtn = rl.Rectangle{X: w - pad - small, Y: pad, Width: small, Height: small}
+	l.JumpBtn = rl.Rectangle{X: w - pad - btn, Y: h - pad - btn, Width: btn, Height: btn}
+	l.FlyBtn = rl.Rectangle{X: w - pad - btn, Y: h - pad - btn - 14*scale - btn, Width: btn, Height: btn}
+	l.DescendBtn = rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: h - pad - btn, Width: btn, Height: btn}
+
+	joyR := float32(70) * scale
+	if touchControls && joyR < 84 {
+		joyR = 84
+	}
+	l.JoystickRadius = joyR
+	l.JoystickCenter = rl.NewVector2(joyR+18*scale, h-joyR-18*scale)
+	zoneHalf := joyR * 1.9
+	l.JoystickZone = rl.Rectangle{
+		X: l.JoystickCenter.X - zoneHalf,
+		Y: l.JoystickCenter.Y - zoneHalf,
+		Width: zoneHalf * 2, Height: zoneHalf * 2,
+	}
+	if top := h * 0.40; l.JoystickZone.Y < top {
+		l.JoystickZone.Y = top
+	}
+
+	// 暂停界面中央恢复按钮，与 drawPauseOverlay 的全尺寸矩形同式
+	l.ResumeBtn = rl.Rectangle{X: w/2 - 90*scale, Y: h/2 - 50*scale, Width: 180 * scale, Height: 100 * scale}
+
+	l.Slop = float32(14) * scale
 }
 
 func main() {
@@ -115,6 +181,7 @@ func main() {
 	physicsAccum := float32(0)
 	paused := false
 	pauseUI := pauseOverlay{}
+	var lay input.Layout
 
 	for !rl.WindowShouldClose() {
 		frameTime := rl.GetFrameTime()
@@ -122,7 +189,11 @@ func main() {
 			frameTime = 0.25
 		}
 
-		if rl.IsKeyPressed(rl.KeyEscape) {
+		// 布局先行：触点命中区、HUD 绘制与暂停按钮共用同一组矩形。
+		buildLayout(&lay)
+		in := input.Read(&lay, p.Flying, paused)
+
+		if in.PauseToggle {
 			paused = !paused
 			pauseUI.SetPaused(paused)
 			if paused {
@@ -133,12 +204,12 @@ func main() {
 			}
 		}
 
-		if rl.IsKeyPressed(rl.KeyF1) {
+		if in.ToggleHUD {
 			showUI = !showUI
 		}
 
 		if !paused {
-			p.Update(w)
+			p.Update(in, w)
 			switch p.ConsumeBlockAction() {
 			case player.BreakBlock:
 				effects.PlayBreak()
