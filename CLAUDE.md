@@ -239,3 +239,13 @@ before any Go code runs — every raylib app died at launch with no visuals
 anything importing raylib dies before its first frame). If you regenerate
 or upgrade the fork, keep that init removed, and re-verify with
 `android/build-android.sh canaryE` (colors red → green → blue → "RAYLIB OK").
+
+The fork carries a second required delta: `cgo_android.go` must link with
+`-Wl,--wrap=fopen`. raylib's android backend defines `__wrap_fopen` (redirects
+fopen into the app's internal storage) and calls `__real_fopen`, which only the
+linker defines when `--wrap=fopen` is passed — upstream raylib-go never passes
+it, so the shipped .so keeps `__real_fopen` as an unresolvable UND symbol and
+dlopen fails instantly on every Android device ("cannot locate symbol
+__real_fopen"). Verify with
+`llvm-nm -D --undefined-only libgame.so | grep __real_fopen` (must be empty)
+and end-to-end with `android/build-android.sh canaryF`.
