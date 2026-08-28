@@ -248,64 +248,95 @@ func main() {
 		rl.EndMode3D()
 
 		if showUI && !paused {
-			drawHUD(p)
+			drawHUD(p, &lay)
 		}
-		drawPauseOverlay(&pauseUI)
+		if touchControls && !paused {
+			drawTouchControls(p, &lay)
+		}
+		drawPauseOverlay(&pauseUI, &lay)
 
 		rl.EndDrawing()
 	}
 }
 
-func drawHUD(p *player.Player) {
-	cx := int32(WindowWidth / 2)
-	cy := int32(WindowHeight / 2)
-	rl.DrawLine(cx-8, cy, cx+8, cy, rl.Black)
-	rl.DrawLine(cx, cy-8, cx, cy+8, rl.Black)
+// uiScale 与 buildLayout 用同一缩放基准（720p 高度），保证绘制与命中一致。
+func uiScale() float32 {
+	scale := float32(rl.GetScreenHeight()) / 720
+	if scale < 0.75 {
+		scale = 0.75
+	}
+	if scale > 3 {
+		scale = 3
+	}
+	return scale
+}
+
+func drawHUD(p *player.Player, l *input.Layout) {
+	w := float32(rl.GetScreenWidth())
+	h := float32(rl.GetScreenHeight())
+	s := uiScale()
+
+	cx := int32(w / 2)
+	cy := int32(h / 2)
+	arm := int32(8 * s)
+	rl.DrawLine(cx-arm, cy, cx+arm, cy, rl.Black)
+	rl.DrawLine(cx, cy-arm, cx, cy+arm, rl.Black)
 
 	posText := fmt.Sprintf("XYZ: %.1f / %.1f / %.1f",
 		math.Round(float64(p.Position.X)*10)/10,
 		math.Round(float64(p.Position.Y)*10)/10,
 		math.Round(float64(p.Position.Z)*10)/10,
 	)
-	rl.DrawText(posText, 10, 10, 14, rl.White)
+	rl.DrawText(posText, int32(10*s), int32(10*s), int32(14*s), rl.White)
 
-	controls := []string{
-		"WASD: Move | Space: Jump | Shift: Run | F: Fly",
-		"Left Click: Break | Right Click: Place | 1-9: Select item",
-		"Water bucket: right-click place water, left-click remove water",
-		"Esc: Pause | F1: Toggle HUD",
+	var controls []string
+	if touchControls {
+		controls = []string{
+			"Left stick: move (push to edge = run) | Drag right half: look",
+			"Tap: break | Hold: place | Tap a hotbar slot: select",
+		}
+	} else {
+		controls = []string{
+			"WASD: Move | Space: Jump | Shift: Run | F: Fly",
+			"Left Click: Break | Right Click: Place | 1-9: Select item",
+			"Water bucket: right-click place water, left-click remove water",
+			"Esc: Pause | F1: Toggle HUD",
+		}
 	}
 	for i, text := range controls {
-		rl.DrawText(text, 10, 34+int32(i*16), 12, rl.Gray)
+		rl.DrawText(text, int32(10*s), int32(34*s)+int32(float32(i)*16*s), int32(12*s), rl.Gray)
 	}
 	if p.Flying {
-		rl.DrawText("FLYING  Space: Up  Left Ctrl: Down", 10, 104, 14, rl.NewColor(255, 232, 120, 255))
+		hint := "FLYING  Space: Up  Left Ctrl: Down"
+		if touchControls {
+			hint = "FLYING"
+		}
+		rl.DrawText(hint, int32(10*s), int32(104*s), int32(14*s), rl.NewColor(255, 232, 120, 255))
 	}
-	drawHotbar(p)
+	drawHotbar(p, l)
 }
 
-func drawHotbar(p *player.Player) {
-	const slotSize int32 = 52
-	const slotGap int32 = 4
-	count := int32(len(player.HotbarItems))
-	barWidth := count*slotSize + (count-1)*slotGap
-	startX := (int32(WindowWidth) - barWidth) / 2
-	y := int32(WindowHeight) - slotSize - 18
+func drawHotbar(p *player.Player, l *input.Layout) {
+	s := uiScale()
 
 	for i, item := range player.HotbarItems {
-		x := startX + int32(i)*(slotSize+slotGap)
-		rect := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(slotSize), Height: float32(slotSize)}
+		if i >= len(l.HotbarSlots) {
+			break
+		}
+		rect := l.HotbarSlots[i]
+		x := int32(rect.X)
+		y := int32(rect.Y)
 		rl.DrawRectangleRec(rect, rl.NewColor(24, 28, 34, 220))
 		outline := rl.NewColor(130, 138, 150, 230)
 		if i == p.SelectedHotbarSlot() {
 			outline = rl.NewColor(255, 224, 112, 255)
-			rl.DrawRectangleRec(rl.Rectangle{X: float32(x - 2), Y: float32(y - 2), Width: float32(slotSize + 4), Height: float32(slotSize + 4)}, outline)
+			rl.DrawRectangleRec(rl.Rectangle{X: rect.X - 2, Y: rect.Y - 2, Width: rect.Width + 4, Height: rect.Height + 4}, outline)
 			rl.DrawRectangleRec(rect, rl.NewColor(32, 36, 43, 245))
 		}
-		rl.DrawRectangleLinesEx(rect, 2, outline)
-		drawItemIcon(item, x+10, y+13, 32)
+		rl.DrawRectangleLinesEx(rect, 2*s*0.5+1, outline)
+		drawItemIcon(item, x+int32(10*s), y+int32(13*s), int32(32*s))
 		number := fmt.Sprintf("%d", i+1)
-		rl.DrawText(number, x+4, y+3, 12, rl.White)
+		rl.DrawText(number, x+int32(4*s), y+int32(3*s), int32(12*s), rl.White)
 	}
 }
 
@@ -359,34 +390,110 @@ func drawWaterBucketIcon(x, y, size int32) {
 	rl.DrawRectangleLines(centerX-8, y+15, 16, 12, rl.NewColor(235, 238, 242, 255))
 }
 
-func drawPauseOverlay(o *pauseOverlay) {
+func drawPauseOverlay(o *pauseOverlay, l *input.Layout) {
 	if o.amount <= 0 {
 		return
 	}
+	w := float32(rl.GetScreenWidth())
+	h := float32(rl.GetScreenHeight())
 	alpha := uint8(170 * o.amount)
-	rl.DrawRectangle(0, 0, WindowWidth, WindowHeight, rl.NewColor(7, 10, 18, alpha))
+	rl.DrawRectangle(0, 0, int32(w), int32(h), rl.NewColor(7, 10, 18, alpha))
 
 	// Ease the central control from a slightly smaller size on both enter and
-	// exit. The play glyph is retained during the exit fade.
-	scale := 0.78 + 0.22*o.amount
-	buttonW := int32(180 * scale)
-	buttonH := int32(100 * scale)
-	x := int32(WindowWidth/2) - buttonW/2
-	y := int32(WindowHeight/2) - buttonH/2
-	button := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(buttonW), Height: float32(buttonH)}
+	// exit. The play glyph is retained during the exit fade. Glyph offsets
+	// follow the original 180x100 design, scaled by the animated button size.
+	anim := 0.78 + 0.22*o.amount
+	buttonW := l.ResumeBtn.Width * anim
+	buttonH := l.ResumeBtn.Height * anim
+	x := w/2 - buttonW/2
+	y := h/2 - buttonH/2
+	fx := buttonW / 180
+	fy := buttonH / 100
+	button := rl.Rectangle{X: x, Y: y, Width: buttonW, Height: buttonH}
 	rl.DrawRectangleRounded(button, 0.18, 8, rl.NewColor(38, 47, 64, uint8(245*o.amount)))
 	rl.DrawRectangleRoundedLinesEx(button, 0.18, 8, 2, rl.NewColor(210, 220, 238, uint8(230*o.amount)))
 
 	if o.showPlay {
-		rl.DrawTriangle(rl.NewVector2(float32(x+buttonW/2-12), float32(y+28)), rl.NewVector2(float32(x+buttonW/2-12), float32(y+buttonH-28)), rl.NewVector2(float32(x+buttonW/2+26), float32(y+buttonH/2)), rl.White)
+		rl.DrawTriangle(rl.NewVector2(x+buttonW/2-12*fx, y+28*fy), rl.NewVector2(x+buttonW/2-12*fx, y+buttonH-28*fy), rl.NewVector2(x+buttonW/2+26*fx, y+buttonH/2), rl.White)
 	} else {
-		rl.DrawRectangle(x+buttonW/2-25, y+27, 16, buttonH-54, rl.White)
-		rl.DrawRectangle(x+buttonW/2+9, y+27, 16, buttonH-54, rl.White)
+		rl.DrawRectangle(int32(x+buttonW/2-25*fx), int32(y+27*fy), int32(16*fx), int32(buttonH-54*fy), rl.White)
+		rl.DrawRectangle(int32(x+buttonW/2+9*fx), int32(y+27*fy), int32(16*fx), int32(buttonH-54*fy), rl.White)
 	}
 	label := "PAUSED"
 	if o.showPlay {
 		label = "PLAYING"
 	}
-	labelWidth := rl.MeasureText(label, 20)
-	rl.DrawText(label, int32(WindowWidth/2)-labelWidth/2, y+buttonH+18, 20, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
+	labelSize := int32(20 * (buttonH / 100))
+	labelWidth := rl.MeasureText(label, labelSize)
+	rl.DrawText(label, int32(w/2)-labelWidth/2, int32(y+buttonH+18*fy), labelSize, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
+}
+
+// drawTouchControls 绘制虚拟摇杆与按钮（仅安卓）。绘制用的矩形与 input
+// 的命中区域来自同一个 Layout，保证所见即可点。
+func drawTouchControls(p *player.Player, l *input.Layout) {
+	btnFill := rl.NewColor(20, 26, 36, 150)
+	btnLine := rl.NewColor(205, 215, 235, 180)
+
+	center, knob, active := input.JoystickKnob()
+	rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius, btnLine)
+	rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius*0.55, rl.NewColor(205, 215, 235, 90))
+	knobR := l.JoystickRadius * 0.38
+	if active {
+		rl.DrawCircleV(knob, knobR, rl.NewColor(235, 240, 250, 200))
+	} else {
+		rl.DrawCircleV(center, knobR, rl.NewColor(235, 240, 250, 90))
+	}
+
+	drawRoundBtn(l.JumpBtn, btnFill, btnLine)
+	arrowUp(l.JumpBtn, 0.26, rl.White)
+
+	drawRoundBtn(l.FlyBtn, btnFill, btnLine)
+	if p.Flying {
+		rl.DrawRectangleRounded(shrinkRect(l.FlyBtn, 6), 0.25, 8, rl.NewColor(255, 224, 112, 90))
+	}
+	flyGlyph(l.FlyBtn, rl.White)
+
+	if p.Flying {
+		drawRoundBtn(l.DescendBtn, btnFill, btnLine)
+		arrowDown(l.DescendBtn, 0.26, rl.White)
+	}
+
+	drawRoundBtn(l.PauseBtn, btnFill, btnLine)
+	bw := l.PauseBtn.Width
+	bh := l.PauseBtn.Height
+	barW := bw * 0.12
+	barH := bh * 0.5
+	x0 := l.PauseBtn.X + bw/2 - barW - bw*0.08
+	y0 := l.PauseBtn.Y + bh*0.25
+	rl.DrawRectangle(int32(x0), int32(y0), int32(barW), int32(barH), rl.White)
+	rl.DrawRectangle(int32(x0+barW+bw*0.16), int32(y0), int32(barW), int32(barH), rl.White)
+}
+
+func drawRoundBtn(b rl.Rectangle, fill, line rl.Color) {
+	rl.DrawRectangleRounded(b, 0.25, 8, fill)
+	rl.DrawRectangleRoundedLinesEx(b, 0.25, 8, 2, line)
+}
+
+func arrowUp(b rl.Rectangle, size float32, c rl.Color) {
+	cx := b.X + b.Width/2
+	cy := b.Y + b.Height/2
+	s := b.Width * size
+	rl.DrawTriangle(rl.NewVector2(cx, cy-s), rl.NewVector2(cx-s, cy+s*0.7), rl.NewVector2(cx+s, cy+s*0.7), c)
+}
+
+func arrowDown(b rl.Rectangle, size float32, c rl.Color) {
+	cx := b.X + b.Width/2
+	cy := b.Y + b.Height/2
+	s := b.Width * size
+	rl.DrawTriangle(rl.NewVector2(cx, cy+s), rl.NewVector2(cx+s, cy-s*0.7), rl.NewVector2(cx-s, cy-s*0.7), c)
+}
+
+func flyGlyph(b rl.Rectangle, c rl.Color) {
+	size := int32(b.Height * 0.30)
+	tw := rl.MeasureText("FLY", size)
+	rl.DrawText("FLY", int32(b.X+b.Width/2)-tw/2, int32(b.Y+b.Height/2)-size/2, size, c)
+}
+
+func shrinkRect(b rl.Rectangle, px float32) rl.Rectangle {
+	return rl.Rectangle{X: b.X + px, Y: b.Y + px, Width: b.Width - 2*px, Height: b.Height - 2*px}
 }
