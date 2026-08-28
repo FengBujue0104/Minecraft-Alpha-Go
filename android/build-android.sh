@@ -47,10 +47,14 @@ case "$TARGET" in
     LIB=canaryd PKG="./android/canary/canaryd"
     MANIFEST="android/canary/AndroidManifestCanaryD.xml"; APK_NAME="canary-d-debug.apk"
     ;;
+  canaryE)
+    LIB=canarye PKG="./android/canary/canarye"
+    MANIFEST="android/canary/AndroidManifestCanaryE.xml"; APK_NAME="canary-e-debug.apk"
+    ;;
   game)
     ;;
   *)
-    echo "未知目标: $TARGET (可选: game | demo | canaryA | canaryB | canaryC | canaryD)" >&2
+    echo "未知目标: $TARGET (可选: game | demo | canaryA-E)" >&2
     exit 1
     ;;
 esac
