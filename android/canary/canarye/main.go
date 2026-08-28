@@ -53,7 +53,9 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-func main() { rl.SetMain(run) }
+func init() { rl.SetMain(run) } // c-shared 下 main() 不执行，必须在 init 注册
+
+func main() {}
 
 func run() {
 	// 阶段 0：等窗口句柄（不需要 raylib）

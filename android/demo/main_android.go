@@ -10,8 +10,9 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-func main() {
-	// Android 上 raylib 的 android_main 会回调这里注册的函数
+func init() {
+	// Android 的 c-shared 构建不会执行 main()，必须在 init() 里注册回调
+	// （写在 main() 里永远不会被调用，表现为启动即退出）。
 	rl.SetMain(gameMain)
 }
 
