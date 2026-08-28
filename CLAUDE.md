@@ -226,3 +226,16 @@ compiles to the `ime_other.go` stubs on Android. Rendering is still
 per-face `DrawTriangle3D` — no custom GPU resources means EGL context loss
 (OpenGL pause/resume on Android) cannot orphan anything; if a per-chunk
 mesh port lands later it must handle context loss explicitly.
+
+### Vendored raylib-go fork (third_party/raylib)
+
+`go.mod` carries `replace github.com/gen2brain/raylib-go/raylib => ./third_party/raylib`.
+The fork differs from upstream v0.60.0 in exactly one thing: upstream's
+`raylib.go` `init()` called `runtime.LockOSThread()`. With
+`-buildmode=c-shared` on Android, package init runs inside dlopen on the
+NativeActivity UI thread, and under Go 1.26 locking it aborts the process
+before any Go code runs — every raylib app died at launch with no visuals
+(canary ladder in `android/canary/` proves it: pure-Go and pure-C pass,
+anything importing raylib dies before its first frame). If you regenerate
+or upgrade the fork, keep that init removed, and re-verify with
+`android/build-android.sh canaryE` (colors red → green → blue → "RAYLIB OK").
