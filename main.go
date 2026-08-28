@@ -125,17 +125,18 @@ func buildLayout(l *input.Layout) {
 }
 
 func main() {
+	// android_main 已把 android_app 装好，这里能拿到私有目录路径。
+	initCrashLog()
 	// Panic recovery: report the stack, and persist it if we can.
 	defer func() {
 		if r := recover(); r != nil {
 			stack := string(debug.Stack())
-			// Print first — if creating the log fails, the stack is still
-			// visible rather than silently lost.
 			fmt.Printf("PANIC: %v\n\nStack:\n%s\n", r, stack)
 			// Android: stdout is invisible; TraceLog routes to logcat
-			// (rcore_android uses __android_log_print).
+			// (rcore_android uses __android_log_print), the local file to
+			// the app-private crash.log black box.
 			rl.TraceLog(rl.LogError, "PANIC: %v", r)
-			rl.TraceLog(rl.LogError, "Stack:\n%s", stack)
+			logLocal("PANIC: " + fmt.Sprint(r) + "\n" + stack)
 			if f, err := os.Create("crash.log"); err == nil {
 				fmt.Fprintf(f, "PANIC: %v\n\nStack:\n%s\n", r, stack)
 				f.Close()
@@ -144,8 +145,11 @@ func main() {
 		}
 	}()
 
+	logLocal("main: enter")
 	rl.SetConfigFlags(rl.FlagMsaa4xHint)
+	logLocal("main: before InitWindow")
 	rl.InitWindow(WindowWidth, WindowHeight, WindowTitle)
+	logLocal("main: window ready")
 	defer rl.CloseWindow()
 	disableIME()
 	defer restoreIME()
@@ -157,12 +161,15 @@ func main() {
 
 	rl.SetTargetFPS(60)
 	rl.DisableCursor()
+	logLocal("main: audio init")
 	effects := audio.New()
 	defer effects.Close()
+	logLocal("main: audio ok")
 
 	seed := time.Now().UnixNano()
 	fmt.Printf("Seed: %d\n", seed)
 	w := world.NewWorld(seed)
+	logLocal("main: world created")
 
 	spawnX := float32(0)
 	spawnZ := float32(0)
@@ -170,6 +177,7 @@ func main() {
 	fmt.Println("Loading initial chunks...")
 	w.EnsureChunksAround(spawnX, spawnZ)
 	w.FlushGenerations()
+	logLocal("main: initial chunks flushed")
 	fmt.Printf("Done! Loaded %d chunks.\n", w.ChunkCount())
 
 	// Stand on the surface. Falls back to a safe height only when no ground
@@ -181,6 +189,7 @@ func main() {
 	}
 	p := player.NewPlayer(spawnX, spawnY, spawnZ)
 	p.SkipNextMouseFrame() // initial cursor-disable spike
+	logLocal("main: player ready, entering loop")
 
 	showUI := true
 	physicsAccum := float32(0)

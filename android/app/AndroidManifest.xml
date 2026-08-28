@@ -11,6 +11,7 @@
     <application
         android:label="Minecraft Go"
         android:hasCode="false"
+        android:debuggable="true"
         android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
 
