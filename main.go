@@ -541,7 +541,8 @@ func drawPauseOverlay(o *pauseOverlay, l *input.Layout) {
 	}
 	labelSize := int32(20 * (buttonH / 100))
 	labelWidth := rl.MeasureText(label, labelSize)
-	rl.DrawText(label, int32(w/2)-labelWidth/2, int32(y+buttonH+18*fy), labelSize, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
+	// 标签放在暂停按钮上方，避免与下方设置按钮重叠
+	rl.DrawText(label, int32(w/2)-labelWidth/2, int32(y-24*fy)-labelSize, labelSize, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
 
 	// 设置入口：暂停完全展开时显示（触屏与桌面鼠标都可点，命中区在
 	// buildLayout 的 l.SettingsBtn）
@@ -551,7 +552,8 @@ func drawPauseOverlay(o *pauseOverlay, l *input.Layout) {
 		btn := l.SettingsBtn
 		rl.DrawRectangleRounded(btn, 0.3, 8, rl.NewColor(38, 47, 64, uint8(200*(float32(a)/255))))
 		rl.DrawRectangleRoundedLinesEx(btn, 0.3, 8, 2, rl.NewColor(210, 220, 238, a))
-		drawTextCCentered("设置", btn.X+btn.Width/2, btn.Y+btn.Height/2-float32(int32(14*s))/2, 14*s, rl.NewColor(235, 240, 250, a))
+		fs := 17 * s
+		drawTextCCentered("设置", btn.X+btn.Width/2, btn.Y+btn.Height/2-fs/2, fs, rl.NewColor(235, 240, 250, a))
 	}
 }
 
