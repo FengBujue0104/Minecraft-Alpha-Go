@@ -103,9 +103,10 @@ expect_diff "开关已翻转" sw_05.png sw_06.png
 expect_same "开关保持（不回弹）" sw_06.png sw_07.png
 tap 640 99; sleep 0.4   # 恢复
 
-echo "==> 渲染距离第 5 档"
+echo "==> 渲染距离第 5 档（截图后调回第 1 档提速）"
 tap 955 419; sleep 0.5
 shot 08_tier5
+tap 566 419; sleep 0.5   # 滑条左端 = 第 1 档
 
 echo "==> 切换存档 → 封面（存档 2 应有元数据）"
 tap 640 547; sleep 0.6
