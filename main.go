@@ -454,15 +454,12 @@ func main() {
 			w.ProcessDirty(world.DirtyBudgetPerFrame)
 		}
 
-		w.EnsureChunksAround(p.Position.X, p.Position.Z)
-		w.ProcessGenerations()
-		w.ProcessDirty(world.DirtyBudgetPerFrame)
-
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.SkyBlue)
 
 		if uiMode == uiTitle {
-			titleFrame(&title, pendingSlot >= 0)
+			// 封面页选中槽位（含 -2 返回当前游戏）交给更新阶段处理
+			pendingSlot = titleFrame(&title, pendingSlot >= 0)
 			rl.EndDrawing()
 			continue
 		}
