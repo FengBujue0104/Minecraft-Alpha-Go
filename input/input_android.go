@@ -11,14 +11,16 @@ import (
 const (
 	tapMaxDuration  float32 = 0.25 // 轻点判定上限（秒），超过不算破坏
 	longPressTime   float32 = 0.40 // 长按触发放置（秒）
+	breakRepeatTime float32 = 0.30 // 破坏按钮按住时的连续触发间隔（秒）
 	lookSensitivity float32 = 0.5  // 触点像素增量乘数，叠加在玩家 MouseSensitivity 上
 	joyDeadzone     float32 = 0.14 // 摇杆死区（基座半径比例）
 	joyRunThreshold float32 = 0.92 // 推满判定为冲刺（比例）
 )
 
-// 触点角色。rolePause/roleFly/roleHotbar/roleResume 在按下的那一帧立即
-// 触发（等价于 IsKeyPressed 的沿语义）；roleJump 沿+持续双语义；roleDescend
-// 仅持续；roleJoystick/roleLook 跟踪位移。
+// 触点角色。rolePause/roleFly/roleHotbar/roleResume/rolePlace 在按下的那一
+// 帧立即触发（等价于 IsKeyPressed 的沿语义）；roleJump 沿+持续双语义；
+// roleBreak 沿触发且按住时按固定间隔连发；roleDescend 仅持续；
+// roleJoystick/roleLook 跟踪位移。
 const (
 	roleNone = iota
 	roleJoystick
@@ -26,6 +28,8 @@ const (
 	roleJump
 	roleFly
 	roleDescend
+	roleBreak
+	rolePlace
 	rolePause
 	roleResume
 	roleHotbar
@@ -40,6 +44,7 @@ type finger struct {
 	moved          bool    // 位移超出 slop，取消轻点/长按
 	downTime       float32 // rl.GetTime 秒
 	longFired      bool
+	lastFire       float32 // roleBreak 上次连发时刻
 }
 
 var (
@@ -71,6 +76,7 @@ func platformRead(l *Layout, flying, paused bool) State {
 				startX: pos.X, startY: pos.Y,
 				lastX: pos.X, lastY: pos.Y,
 				downTime: now,
+				lastFire: now,
 			}
 			fingers[id] = f
 			f.role = assignRole(l, flying, paused, pos, &st)
@@ -82,6 +88,7 @@ func platformRead(l *Layout, flying, paused bool) State {
 
 		switch f.role {
 		case roleJoystick:
+			// 动态摇杆：基座中心 = 按下点（assignRole 时记入 joyCenter）
 			vx, vy := pos.X-joyCenter.X, pos.Y-joyCenter.Y
 			r := float32(math.Sqrt(float64(vx*vx + vy*vy)))
 			clampR := r
@@ -118,6 +125,12 @@ func platformRead(l *Layout, flying, paused bool) State {
 			st.JumpHeld = true
 		case roleDescend:
 			st.DescendHeld = true
+		case roleBreak:
+			// 按住连续破坏：按下沿 + 固定间隔连发
+			if now-f.lastFire >= breakRepeatTime {
+				f.lastFire = now
+				st.BreakPressed = true
+			}
 		}
 	}
 
@@ -171,6 +184,14 @@ func assignRole(l *Layout, flying, paused bool, pos rl.Vector2, st *State) int {
 		st.DescendHeld = true
 		return roleDescend
 	}
+	if pointIn(l.BreakBtn, pos) {
+		st.BreakPressed = true // 按下沿；连发由 roleBreak 分支按间隔续触
+		return roleBreak
+	}
+	if pointIn(l.PlaceBtn, pos) {
+		st.PlacePressed = true
+		return rolePlace
+	}
 	for i, r := range l.HotbarSlots {
 		if pointIn(r, pos) {
 			st.HotbarSlot = i
@@ -178,9 +199,10 @@ func assignRole(l *Layout, flying, paused bool, pos rl.Vector2, st *State) int {
 		}
 	}
 	if pointIn(l.JoystickZone, pos) {
-		joyCenter = l.JoystickCenter
+		// 动态摇杆：按下点即基座中心
+		joyCenter = pos
 		joyOn = true
-		joyKnob = joyCenter
+		joyKnob = pos
 		return roleJoystick
 	}
 	return roleLook

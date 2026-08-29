@@ -93,14 +93,23 @@ func buildLayout(l *input.Layout) {
 
 	pad := float32(26) * scale
 	btn := float32(76) * scale
-	if touchControls && btn < 84 {
-		btn = 84
+	if touchControls {
+		// 全面屏/刘海屏没有低成本的安全区查询，用加宽的边距做启发式规避
+		pad = 36 * scale
+		if btn < 84 {
+			btn = 84
+		}
 	}
 	small := float32(48) * scale
 
 	l.PauseBtn = rl.Rectangle{X: w - pad - small, Y: pad, Width: small, Height: small}
 	l.JumpBtn = rl.Rectangle{X: w - pad - btn, Y: h - pad - btn, Width: btn, Height: btn}
-	l.FlyBtn = rl.Rectangle{X: w - pad - btn, Y: h - pad - btn - 14*scale - btn, Width: btn, Height: btn}
+	flyY := h - pad - btn - 14*scale - btn
+	l.FlyBtn = rl.Rectangle{X: w - pad - btn, Y: flyY, Width: btn, Height: btn}
+	// 破坏/放置按钮在 Fly 按钮上方一行：右列是放置，左侧是破坏
+	actionY := flyY - 14*scale - btn
+	l.PlaceBtn = rl.Rectangle{X: w - pad - btn, Y: actionY, Width: btn, Height: btn}
+	l.BreakBtn = rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: actionY, Width: btn, Height: btn}
 	l.DescendBtn = rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: h - pad - btn, Width: btn, Height: btn}
 
 	joyR := float32(70) * scale
@@ -108,16 +117,10 @@ func buildLayout(l *input.Layout) {
 		joyR = 84
 	}
 	l.JoystickRadius = joyR
+	// 动态摇杆：左半屏任意位置按下即在按下点生成摇杆。JoystickCenter 仅
+	// 作为待机时的视觉提示环锚点。
 	l.JoystickCenter = rl.NewVector2(joyR+18*scale, h-joyR-18*scale)
-	zoneHalf := joyR * 1.9
-	l.JoystickZone = rl.Rectangle{
-		X: l.JoystickCenter.X - zoneHalf,
-		Y: l.JoystickCenter.Y - zoneHalf,
-		Width: zoneHalf * 2, Height: zoneHalf * 2,
-	}
-	if top := h * 0.40; l.JoystickZone.Y < top {
-		l.JoystickZone.Y = top
-	}
+	l.JoystickZone = rl.Rectangle{X: 0, Y: 0, Width: w * 0.5, Height: h}
 
 	// 暂停界面中央恢复按钮，与 drawPauseOverlay 的全尺寸矩形同式
 	l.ResumeBtn = rl.Rectangle{X: w/2 - 90*scale, Y: h/2 - 50*scale, Width: 180 * scale, Height: 100 * scale}
@@ -125,12 +128,12 @@ func buildLayout(l *input.Layout) {
 	l.Slop = float32(14) * scale
 }
 
-// startupMilestones 是启动黑匣子的屏上镜像：logLocal 记录的每条里程碑
-// 在进入主循环前直接画出来，无 adb 环境也能看到死在哪个阶段。
+// startupMilestones 是启动黑匣子的屏上镜像：仅当以 `-tags androiddebug`
+// 构建时才画到屏幕上，正式版静默（crash.log 文件与 panic 红屏不受影响）。
 var startupMilestones []string
 
 func drawMilestones() {
-	if !rl.IsWindowReady() {
+	if !debugUI || !rl.IsWindowReady() {
 		return
 	}
 	rl.BeginDrawing()
@@ -267,11 +270,8 @@ func main() {
 
 		if !paused {
 			p.Update(in, w)
-			switch p.ConsumeBlockAction() {
-			case player.BreakBlock:
+			if p.ConsumeBlockAction() == player.BreakBlock {
 				effects.PlayBreak()
-			case player.PlaceBlock:
-				effects.PlayPlace()
 			}
 
 			physicsAccum += frameTime
@@ -346,22 +346,17 @@ func drawHUD(p *player.Player, l *input.Layout) {
 	)
 	rl.DrawText(posText, int32(10*s), int32(10*s), int32(14*s), rl.White)
 
-	var controls []string
-	if touchControls {
-		controls = []string{
-			"Left stick: move (push to edge = run) | Drag right half: look",
-			"Tap: break | Hold: place | Tap a hotbar slot: select",
-		}
-	} else {
-		controls = []string{
+	// 键鼠操作提示仅桌面端显示；触屏的操作方式就是屏幕上的控件本身。
+	if !touchControls {
+		controls := []string{
 			"WASD: Move | Space: Jump | Shift: Run | F: Fly",
 			"Left Click: Break | Right Click: Place | 1-9: Select item",
 			"Water bucket: right-click place water, left-click remove water",
 			"Esc: Pause | F1: Toggle HUD",
 		}
-	}
-	for i, text := range controls {
-		rl.DrawText(text, int32(10*s), int32(34*s)+int32(float32(i)*16*s), int32(12*s), rl.Gray)
+		for i, text := range controls {
+			rl.DrawText(text, int32(10*s), int32(34*s)+int32(float32(i)*16*s), int32(12*s), rl.Gray)
+		}
 	}
 	if p.Flying {
 		hint := "FLYING  Space: Up  Left Ctrl: Down"
@@ -391,9 +386,15 @@ func drawHotbar(p *player.Player, l *input.Layout) {
 			rl.DrawRectangleRec(rect, rl.NewColor(32, 36, 43, 245))
 		}
 		rl.DrawRectangleLinesEx(rect, 2*s*0.5+1, outline)
-		drawItemIcon(item, x+int32(10*s), y+int32(13*s), int32(32*s))
-		number := fmt.Sprintf("%d", i+1)
-		rl.DrawText(number, x+int32(4*s), y+int32(3*s), int32(12*s), rl.White)
+		// 图标在槽位内居中；触屏隐藏角标数字（点击即选择，数字无意义且挤占空间）
+		iconSize := int32(32 * s)
+		ix := x + (int32(rect.Width)-iconSize)/2
+		iy := y + (int32(rect.Height)-iconSize)/2
+		drawItemIcon(item, ix, iy, iconSize)
+		if !touchControls {
+			number := fmt.Sprintf("%d", i+1)
+			rl.DrawText(number, x+int32(4*s), y+int32(3*s), int32(12*s), rl.White)
+		}
 	}
 }
 
@@ -485,20 +486,23 @@ func drawPauseOverlay(o *pauseOverlay, l *input.Layout) {
 	rl.DrawText(label, int32(w/2)-labelWidth/2, int32(y+buttonH+18*fy), labelSize, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
 }
 
-// drawTouchControls 绘制虚拟摇杆与按钮（仅安卓）。绘制用的矩形与 input
-// 的命中区域来自同一个 Layout，保证所见即可点。
+// drawTouchControls 绘制触屏控件（仅安卓）。绘制用的矩形与 input 的命中
+// 区域来自同一个 Layout，保证所见即可点。摇杆是动态的：按下时在按下点
+// 展开，松手后只在锚点留一圈淡淡的提示。
 func drawTouchControls(p *player.Player, l *input.Layout) {
 	btnFill := rl.NewColor(20, 26, 36, 150)
 	btnLine := rl.NewColor(205, 215, 235, 180)
 
 	center, knob, active := input.JoystickKnob()
-	rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius, btnLine)
-	rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius*0.55, rl.NewColor(205, 215, 235, 90))
-	knobR := l.JoystickRadius * 0.38
 	if active {
-		rl.DrawCircleV(knob, knobR, rl.NewColor(235, 240, 250, 200))
+		rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius, btnLine)
+		rl.DrawCircleLines(int32(center.X), int32(center.Y), l.JoystickRadius*0.55, rl.NewColor(205, 215, 235, 90))
+		rl.DrawCircleV(knob, l.JoystickRadius*0.38, rl.NewColor(235, 240, 250, 200))
 	} else {
-		rl.DrawCircleV(center, knobR, rl.NewColor(235, 240, 250, 90))
+		// 待机提示环：提示左半屏可按下生成摇杆
+		hint := l.JoystickCenter
+		rl.DrawCircleLines(int32(hint.X), int32(hint.Y), l.JoystickRadius*0.8, rl.NewColor(205, 215, 235, 45))
+		rl.DrawCircleLines(int32(hint.X), int32(hint.Y), l.JoystickRadius*0.44, rl.NewColor(205, 215, 235, 30))
 	}
 
 	drawRoundBtn(l.JumpBtn, btnFill, btnLine)
@@ -509,6 +513,12 @@ func drawTouchControls(p *player.Player, l *input.Layout) {
 		rl.DrawRectangleRounded(shrinkRect(l.FlyBtn, 6), 0.25, 8, rl.NewColor(255, 224, 112, 90))
 	}
 	flyGlyph(l.FlyBtn, rl.White)
+
+	// 破坏（X）与放置（方块）按钮，位于 Fly 上方一行
+	drawRoundBtn(l.BreakBtn, btnFill, btnLine)
+	crossGlyph(l.BreakBtn, rl.White)
+	drawRoundBtn(l.PlaceBtn, btnFill, btnLine)
+	cubeGlyph(l.PlaceBtn, rl.White)
 
 	if p.Flying {
 		drawRoundBtn(l.DescendBtn, btnFill, btnLine)
@@ -549,6 +559,31 @@ func flyGlyph(b rl.Rectangle, c rl.Color) {
 	size := int32(b.Height * 0.30)
 	tw := rl.MeasureText("FLY", size)
 	rl.DrawText("FLY", int32(b.X+b.Width/2)-tw/2, int32(b.Y+b.Height/2)-size/2, size, c)
+}
+
+// crossGlyph 画破坏按钮的 X 形图标。
+func crossGlyph(b rl.Rectangle, c rl.Color) {
+	cx := b.X + b.Width/2
+	cy := b.Y + b.Height/2
+	s := b.Width * 0.24
+	th := b.Width * 0.08
+	rl.DrawLineEx(rl.NewVector2(cx-s, cy-s), rl.NewVector2(cx+s, cy+s), th, c)
+	rl.DrawLineEx(rl.NewVector2(cx-s, cy+s), rl.NewVector2(cx+s, cy-s), th, c)
+}
+
+// cubeGlyph 画放置按钮的方块图标：菱形顶面 + 矩形正面。
+func cubeGlyph(b rl.Rectangle, c rl.Color) {
+	cx := b.X + b.Width/2
+	cy := b.Y + b.Height/2
+	w := b.Width * 0.24
+	h := w * 0.75
+	tip := rl.NewVector2(cx, cy-h)
+	left := rl.NewVector2(cx-w, cy-h+w*0.4)
+	right := rl.NewVector2(cx+w, cy-h+w*0.4)
+	bottom := rl.NewVector2(cx, cy-h+w*0.8)
+	rl.DrawTriangle(tip, left, bottom, c)
+	rl.DrawTriangle(tip, bottom, right, c)
+	rl.DrawRectangle(int32(cx-w), int32(cy-h+w*0.8), int32(2*w), int32(w*1.05), c)
 }
 
 func shrinkRect(b rl.Rectangle, px float32) rl.Rectangle {

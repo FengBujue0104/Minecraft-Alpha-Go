@@ -11,25 +11,24 @@ import (
 
 const sampleRate = 22050
 
-// Effects owns the short block place and break sounds.
+// Effects owns the short block break sound.
 type Effects struct {
-	place  rl.Sound
 	remove rl.Sound
 	ready  bool
 }
 
-// New initializes raylib audio and creates two short synthesized effects.
+// New initializes raylib audio and creates a short synthesized effect.
+// There is deliberately no placement sound: a pure sine "place" blip tested
+// poorly on device.
 func New() *Effects {
 	rl.InitAudioDevice()
 	if !rl.IsAudioDeviceReady() {
 		return &Effects{}
 	}
 	e := &Effects{
-		place:  makeTone(580, 0.07),
 		remove: makeTone(180, 0.10),
 		ready:  true,
 	}
-	rl.SetSoundVolume(e.place, 0.35)
 	rl.SetSoundVolume(e.remove, 0.40)
 	return e
 }
@@ -55,13 +54,6 @@ func makeTone(frequency, duration float64) rl.Sound {
 	return sound
 }
 
-// PlayPlace plays the placement sound when audio is available.
-func (e *Effects) PlayPlace() {
-	if e.ready {
-		rl.PlaySound(e.place)
-	}
-}
-
 // PlayBreak plays the removal sound when audio is available.
 func (e *Effects) PlayBreak() {
 	if e.ready {
@@ -74,7 +66,6 @@ func (e *Effects) Close() {
 	if !e.ready {
 		return
 	}
-	rl.UnloadSound(e.place)
 	rl.UnloadSound(e.remove)
 	rl.CloseAudioDevice()
 	e.ready = false

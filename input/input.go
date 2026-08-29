@@ -10,12 +10,14 @@ import (
 // Layout 是触屏控件在屏幕上的命中区域，每帧由 UI 层按当前窗口尺寸重建。
 // 桌面端 Read 不使用它，但它同时供 HUD 绘制使用，保证绘制与命中一致。
 type Layout struct {
-	JoystickZone   rl.Rectangle  // 摇杆捕获区（左下角）
-	JoystickCenter rl.Vector2    // 摇杆基座中心
+	JoystickZone   rl.Rectangle  // 摇杆捕获区（左半屏），按下点即摇杆中心
+	JoystickCenter rl.Vector2    // 待机提示环的锚点（视觉用，输入不依赖）
 	JoystickRadius float32       // 摇杆基座半径
 	JumpBtn        rl.Rectangle  // 跳跃/上升
 	FlyBtn         rl.Rectangle  // 飞行切换
 	DescendBtn     rl.Rectangle  // 飞行下降（仅飞行时生效）
+	BreakBtn       rl.Rectangle  // 破坏（按住连续触发）
+	PlaceBtn       rl.Rectangle  // 放置
 	PauseBtn       rl.Rectangle  // 屏上暂停按钮
 	ResumeBtn      rl.Rectangle  // 暂停界面中央恢复按钮
 	HotbarSlots    []rl.Rectangle // 快捷栏槽位，索引与 player.HotbarItems 对齐
