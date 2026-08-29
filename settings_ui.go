@@ -246,7 +246,7 @@ func settingsFrame(w, h float32, sessionActive bool) {
 		row := rl.Rectangle{X: rowX, Y: y, Width: rowW, Height: rowH}
 		sw := rl.Rectangle{X: rowX + rowW - 84*s, Y: y + rowH/2 - 17*s, Width: 70 * s, Height: 34 * s}
 		// 整行可点；300ms 防抖闩锁兜底任何边沿异常，杜绝"闪一下弹回"
-		if justPressed && pointerIn(row) && now-lastToggleFire >= 0.3 {
+		if justPressed && pointerIn(row) && now-lastToggleFire >= 0.45 {
 			on = !on
 			lastToggleFire = now
 		}

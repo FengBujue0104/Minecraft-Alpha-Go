@@ -316,7 +316,7 @@ func main() {
 			p = player.NewPlayer(spawnX, spawnY, spawnZ)
 		}
 		p.AutoJump = settings.Current.AutoJump
-		p.SkipNextMouseFrame()
+		p.SkipNextMouseFrames(12)
 		logLocal("main: session ready, entering loop")
 
 		activeSlot = slot
@@ -378,7 +378,7 @@ func main() {
 					writeSave() // 暂停即存档
 				} else {
 					rl.DisableCursor()
-					p.SkipNextMouseFrame()
+					p.SkipNextMouseFrames(12)
 				}
 			}
 

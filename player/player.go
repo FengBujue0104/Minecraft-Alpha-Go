@@ -60,7 +60,8 @@ type Player struct {
 	InWater        bool
 	Flying         bool
 	AutoJump       bool    // 贴地移动遇 1 格高台阶自动起跳（设置项）
-	skipMouse      bool    // skip mouse delta for one frame after cursor re-hide
+	mouseWarmup    int     // 光标（重）捕获后忽略视角增量的帧数：指针跳变
+	                       // 的残余 delta 可能跨多帧到达，单帧丢弃不够
 	waterExitTimer float32 // grace period after leaving water for continued swimming
 	SelectedBlock  blocks.BlockType
 	TargetBlockPos [3]int // World pos of the block being looked at
@@ -87,8 +88,15 @@ func NewPlayer(x, y, z float32) *Player {
 }
 
 // SkipNextMouseFrame tells the player to ignore the next mouse delta.
-func (p *Player) SkipNextMouseFrame() {
-	p.skipMouse = true
+func (p *Player) SkipNextMouseFrame() { p.SkipNextMouseFrames(1) }
+
+// SkipNextMouseFrames ignores look deltas for the next n frames. Used after
+// cursor (re)capture: the pointer-jump residual can arrive across several
+// frames (slow frames under software rendering especially).
+func (p *Player) SkipNextMouseFrames(n int) {
+	if n > p.mouseWarmup {
+		p.mouseWarmup = n
+	}
 }
 
 // SelectHotbarSlot selects a zero-based hotbar slot. It is kept separate from
@@ -133,9 +141,9 @@ func (p *Player) Update(in input.State, w *world.World) {
 	// Look — cap first-frame spike. 钳制而非清零：快速拖动时单帧位移
 	// 超过阈值很常见，清零会让视角瞬间停顿（不丝滑的主要来源）。
 	mouseDelta := rl.Vector2{X: in.LookDX, Y: in.LookDY}
-	if p.skipMouse {
+	if p.mouseWarmup > 0 {
 		mouseDelta = rl.Vector2{}
-		p.skipMouse = false
+		p.mouseWarmup--
 	}
 	const maxDelta = 90
 	if mouseDelta.X > maxDelta {
