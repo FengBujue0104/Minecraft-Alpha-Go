@@ -520,6 +520,10 @@ func drawHUD(p *player.Player, l *input.Layout) {
 		math.Round(float64(p.Position.Y)*10)/10,
 		math.Round(float64(p.Position.Z)*10)/10,
 	)
+	if touchControls {
+		// 触屏版附带 FPS 与当前渲染档位：供各档位真机帧率实测定稿
+		posText += fmt.Sprintf(" | FPS: %d | 渲染第%d档", rl.GetFPS(), settings.Current.RenderTier)
+	}
 	rl.DrawText(posText, int32(10*s), int32(10*s), int32(14*s), rl.White)
 
 	// 键鼠操作提示仅桌面端显示；触屏的操作方式就是屏幕上的控件本身。
