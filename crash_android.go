@@ -19,6 +19,7 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,17 @@ func initCrashLog() {
 	if p := C.mcInternalDataPath(); p != nil {
 		crashLogPath = C.GoString(p) + "/crash.log"
 	}
+}
+
+// appDataDir 返回应用私有目录，供设置持久化等使用（黑匣子同目录）。
+func appDataDir() string {
+	if crashLogPath == "" {
+		initCrashLog()
+	}
+	if crashLogPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(crashLogPath, "/crash.log")
 }
 
 // logLocal 同时输出到 stdout、私有目录 crash.log 和屏上里程碑镜像

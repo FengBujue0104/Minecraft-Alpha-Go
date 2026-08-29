@@ -59,6 +59,7 @@ type Player struct {
 	OnGround       bool
 	InWater        bool
 	Flying         bool
+	AutoJump       bool    // 贴地移动遇 1 格高台阶自动起跳（设置项）
 	skipMouse      bool    // skip mouse delta for one frame after cursor re-hide
 	waterExitTimer float32 // grace period after leaving water for continued swimming
 	SelectedBlock  blocks.BlockType
@@ -208,6 +209,26 @@ func (p *Player) Update(in input.State, w *world.World) {
 		if in.JumpPressed && p.OnGround {
 			p.Velocity.Y = JumpVelocity
 			p.OnGround = false
+		}
+	}
+
+	// 自动跳跃：贴地移动时，前方约半步处若是 1 格高台阶且其后两格净空，
+	// 则自动起跳。放在手动跳跃之后，按住跳跃时手动输入优先。
+	if p.AutoJump && p.OnGround && !p.InWater && p.waterExitTimer <= 0 &&
+		(worldMove.X != 0 || worldMove.Z != 0) {
+		if l := float32(math.Sqrt(float64(worldMove.X*worldMove.X + worldMove.Z*worldMove.Z))); l > 0.001 {
+			dirX, dirZ := worldMove.X/l, worldMove.Z/l
+			aheadX := p.Position.X + dirX*(PlayerWidth/2+0.35)
+			aheadZ := p.Position.Z + dirZ*(PlayerWidth/2+0.35)
+			fx := int(math.Floor(float64(aheadX)))
+			fz := int(math.Floor(float64(aheadZ)))
+			feet := int(math.Floor(float64(p.Position.Y + 0.05)))
+			if w.GetBlock(fx, feet, fz).IsSolid() &&
+				!w.GetBlock(fx, feet+1, fz).IsSolid() &&
+				!w.GetBlock(fx, feet+2, fz).IsSolid() {
+				p.Velocity.Y = JumpVelocity
+				p.OnGround = false
+			}
 		}
 	}
 

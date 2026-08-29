@@ -11,14 +11,16 @@ import (
 // 桌面端 Read 不使用它，但它同时供 HUD 绘制使用，保证绘制与命中一致。
 type Layout struct {
 	JoystickZone   rl.Rectangle  // 摇杆捕获区（左半屏），按下点即摇杆中心
-	JoystickCenter rl.Vector2    // 待机提示环的锚点（视觉用，输入不依赖）
+	JoystickCenter rl.Vector2    // 固定摇杆的基座中心（自由摇杆模式下仅作提示锚点）
 	JoystickRadius float32       // 摇杆基座半径
+	FreeJoystick   bool          // true=按下处生成（自由）；false=基座固定在锚点
 	JumpBtn        rl.Rectangle  // 跳跃/上升
 	FlyBtn         rl.Rectangle  // 飞行切换
 	DescendBtn     rl.Rectangle  // 飞行下降（仅飞行时生效）
 	BreakBtn       rl.Rectangle  // 破坏（按住连续触发）
 	PlaceBtn       rl.Rectangle  // 放置
 	PauseBtn       rl.Rectangle  // 屏上暂停按钮
+	SettingsBtn    rl.Rectangle  // 暂停界面里的设置按钮（暂停时显示）
 	ResumeBtn      rl.Rectangle  // 暂停界面中央恢复按钮
 	HotbarSlots    []rl.Rectangle // 快捷栏槽位，索引与 player.HotbarItems 对齐
 	Slop           float32       // 触点位移超过该值即视为滑动，取消轻点/长按
@@ -41,6 +43,7 @@ type State struct {
 	HotbarSlot     int  // >=0 直接选中槽位，-1 表示本帧无
 	HotbarDelta    int  // -1/+1 循环移动（桌面滚轮）
 	PauseToggle    bool // 沿触发（桌面 Esc，安卓暂停按钮/BACK/恢复按钮）
+	SettingsOpen   bool // 沿触发（暂停界面里的设置按钮）
 	ToggleHUD      bool // 沿触发（桌面 F1）
 }
 

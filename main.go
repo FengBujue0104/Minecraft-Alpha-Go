@@ -14,6 +14,7 @@ import (
 	"mc-go/blocks"
 	"mc-go/input"
 	"mc-go/player"
+	"mc-go/settings"
 	"mc-go/world"
 )
 
@@ -60,9 +61,9 @@ func init() {
 	rl.SetMain(main)
 }
 
-// buildLayout 按当前窗口尺寸重建触屏控件命中区。缩放基于高度（设计基准
-// 720p），触屏时对最小命中尺寸设下限；桌面 1280x720 下所有值与原硬编码
-// 常数完全一致，保证桌面画面不变。
+// buildLayout 按当前窗口尺寸重建触屏控件命中区，并应用用户的布局自定义
+// （settings 中的按钮位置/尺寸、物品栏缩放、摇杆锚点）。缩放基于高度
+// （720p 基准）；桌面 1280x720 下与原硬编码一致。
 func buildLayout(l *input.Layout) {
 	w := float32(rl.GetScreenWidth())
 	h := float32(rl.GetScreenHeight())
@@ -73,13 +74,25 @@ func buildLayout(l *input.Layout) {
 	if scale > 3 {
 		scale = 3
 	}
+	set := settings.Current
 
 	// 快捷栏：drawHotbar 与触点命中共用这一组矩形
 	slot := float32(52) * scale
-	gap := float32(4) * scale
-	if touchControls && slot < 64 {
-		slot = 64
+	if touchControls {
+		if slot < 64 {
+			slot = 64
+		}
+		if set.HotbarScaleSet {
+			slot = float32(52) * scale * set.HotbarScale
+			if slot < 40 {
+				slot = 40
+			}
+			if slot > 200 {
+				slot = 200
+			}
+		}
 	}
+	gap := float32(4) * scale
 	count := float32(len(player.HotbarItems))
 	barWidth := count*slot + (count-1)*gap
 	startX := (w - barWidth) / 2
@@ -103,23 +116,38 @@ func buildLayout(l *input.Layout) {
 	small := float32(48) * scale
 
 	l.PauseBtn = rl.Rectangle{X: w - pad - small, Y: pad, Width: small, Height: small}
-	l.JumpBtn = rl.Rectangle{X: w - pad - btn, Y: h - pad - btn, Width: btn, Height: btn}
-	flyY := h - pad - btn - 14*scale - btn
-	l.FlyBtn = rl.Rectangle{X: w - pad - btn, Y: flyY, Width: btn, Height: btn}
-	// 破坏/放置按钮在 Fly 按钮上方一行：右列是放置，左侧是破坏
-	actionY := flyY - 14*scale - btn
-	l.PlaceBtn = rl.Rectangle{X: w - pad - btn, Y: actionY, Width: btn, Height: btn}
-	l.BreakBtn = rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: actionY, Width: btn, Height: btn}
-	l.DescendBtn = rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: h - pad - btn, Width: btn, Height: btn}
+	l.SettingsBtn = rl.Rectangle{X: w/2 - 85*scale, Y: h/2 + 60*scale, Width: 170 * scale, Height: 56 * scale}
+
+	// 按钮：默认位置由公式给出，用户自定义则以归一化中心 + 相对缩放覆盖
+	jumpDef := rl.Rectangle{X: w - pad - btn, Y: h - pad - btn, Width: btn, Height: btn}
+	flyDef := rl.Rectangle{X: w - pad - btn, Y: h - pad - btn - 14*scale - btn, Width: btn, Height: btn}
+	placeDef := rl.Rectangle{X: w - pad - btn, Y: flyDef.Y - 14*scale - btn, Width: btn, Height: btn}
+	breakDef := rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: placeDef.Y, Width: btn, Height: btn}
+	descDef := rl.Rectangle{X: w - pad - 2*btn - 14*scale, Y: h - pad - btn, Width: btn, Height: btn}
+	applyBtn := func(name string, def rl.Rectangle) rl.Rectangle {
+		o, ok := set.Buttons[name]
+		if !ok {
+			return def
+		}
+		size := btn * o.Scale
+		return rl.Rectangle{X: o.NX*w - size/2, Y: o.NY*h - size/2, Width: size, Height: size}
+	}
+	l.JumpBtn = applyBtn("jump", jumpDef)
+	l.FlyBtn = applyBtn("fly", flyDef)
+	l.PlaceBtn = applyBtn("place", placeDef)
+	l.BreakBtn = applyBtn("break", breakDef)
+	l.DescendBtn = applyBtn("descend", descDef)
 
 	joyR := float32(70) * scale
 	if touchControls && joyR < 84 {
 		joyR = 84
 	}
 	l.JoystickRadius = joyR
-	// 动态摇杆：左半屏任意位置按下即在按下点生成摇杆。JoystickCenter 仅
-	// 作为待机时的视觉提示环锚点。
+	l.FreeJoystick = set.FreeJoystick
 	l.JoystickCenter = rl.NewVector2(joyR+18*scale, h-joyR-18*scale)
+	if !set.FreeJoystick && set.AnchorSet {
+		l.JoystickCenter = rl.NewVector2(set.AnchorX*w, set.AnchorY*h)
+	}
 	l.JoystickZone = rl.Rectangle{X: 0, Y: 0, Width: w * 0.5, Height: h}
 
 	// 暂停界面中央恢复按钮，与 drawPauseOverlay 的全尺寸矩形同式
@@ -207,6 +235,9 @@ func main() {
 	effects := audio.New()
 	defer effects.Close()
 	logLocal("main: audio ok")
+	loadMenuFont()
+	settings.SetPath(appDataDir() + "/settings.bin")
+	settings.Load()
 	drawMilestones()
 
 	seed := time.Now().UnixNano()
@@ -251,35 +282,59 @@ func main() {
 
 		// 布局先行：触点命中区、HUD 绘制与暂停按钮共用同一组矩形。
 		buildLayout(&lay)
-		in := input.Read(&lay, p.Flying, paused)
 
-		if in.PauseToggle {
-			paused = !paused
-			pauseUI.SetPaused(paused)
-			if paused {
-				rl.EnableCursor()
+		if uiMode == uiGame {
+			in := input.Read(&lay, p.Flying, paused)
+
+			if in.PauseToggle {
+				paused = !paused
+				pauseUI.SetPaused(paused)
+				if paused {
+					rl.EnableCursor()
+				} else {
+					rl.DisableCursor()
+					p.SkipNextMouseFrame()
+				}
+			}
+
+			if in.SettingsOpen && paused {
+				uiMode = uiSettings
+				ed = editorState{}
+			}
+
+			if in.ToggleHUD {
+				showUI = !showUI
+			}
+
+			if !paused {
+				// 用户偏好：自动跳跃 + 视角反转/灵敏度
+				p.AutoJump = settings.Current.AutoJump
+				if in.LookDX != 0 || in.LookDY != 0 {
+					if settings.Current.InvertX {
+						in.LookDX = -in.LookDX
+					}
+					if settings.Current.InvertY {
+						in.LookDY = -in.LookDY
+					}
+					in.LookDX *= settings.Current.SensX
+					in.LookDY *= settings.Current.SensY
+				}
+				p.Update(in, w)
+				if p.ConsumeBlockAction() == player.BreakBlock {
+					effects.PlayBreak()
+				}
+
+				physicsAccum += frameTime
+				for physicsAccum >= PhysicsDt {
+					p.StepPhysics(w, PhysicsDt)
+					physicsAccum -= PhysicsDt
+				}
 			} else {
-				rl.DisableCursor()
-				p.SkipNextMouseFrame()
-			}
-		}
-
-		if in.ToggleHUD {
-			showUI = !showUI
-		}
-
-		if !paused {
-			p.Update(in, w)
-			if p.ConsumeBlockAction() == player.BreakBlock {
-				effects.PlayBreak()
-			}
-
-			physicsAccum += frameTime
-			for physicsAccum >= PhysicsDt {
-				p.StepPhysics(w, PhysicsDt)
-				physicsAccum -= PhysicsDt
+				physicsAccum = 0
 			}
 		} else {
+			// 设置页/布局编辑器：输入与绘制都在绘制阶段自处理（即时模式），
+			// 这里只需保证游戏保持暂停。
 			physicsAccum = 0
 		}
 		pauseUI.Update(frameTime)
@@ -307,10 +362,13 @@ func main() {
 		if showUI && !paused {
 			drawHUD(p, &lay)
 		}
-		if touchControls && !paused {
+		if touchControls && !paused && uiMode == uiGame {
 			drawTouchControls(p, &lay)
 		}
 		drawPauseOverlay(&pauseUI, &lay)
+		if uiMode != uiGame {
+			drawSettingsPages(&lay)
+		}
 
 		rl.EndDrawing()
 	}
@@ -484,6 +542,17 @@ func drawPauseOverlay(o *pauseOverlay, l *input.Layout) {
 	labelSize := int32(20 * (buttonH / 100))
 	labelWidth := rl.MeasureText(label, labelSize)
 	rl.DrawText(label, int32(w/2)-labelWidth/2, int32(y+buttonH+18*fy), labelSize, rl.NewColor(235, 240, 250, uint8(255*o.amount)))
+
+	// 设置入口：暂停完全展开时显示（触屏与桌面鼠标都可点，命中区在
+	// buildLayout 的 l.SettingsBtn）
+	if o.amount > 0.95 {
+		s := uiScale()
+		a := uint8(255 * (o.amount - 0.95) / 0.05)
+		btn := l.SettingsBtn
+		rl.DrawRectangleRounded(btn, 0.3, 8, rl.NewColor(38, 47, 64, uint8(200*(float32(a)/255))))
+		rl.DrawRectangleRoundedLinesEx(btn, 0.3, 8, 2, rl.NewColor(210, 220, 238, a))
+		drawTextCCentered("设置", btn.X+btn.Width/2, btn.Y+btn.Height/2-float32(int32(14*s))/2, 14*s, rl.NewColor(235, 240, 250, a))
+	}
 }
 
 // drawTouchControls 绘制触屏控件（仅安卓）。绘制用的矩形与 input 的命中

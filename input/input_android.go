@@ -32,6 +32,7 @@ const (
 	rolePlace
 	rolePause
 	roleResume
+	roleSettings
 	roleHotbar
 )
 
@@ -165,10 +166,14 @@ func assignRole(l *Layout, flying, paused bool, pos rl.Vector2, st *State) int {
 		return rolePause
 	}
 	if paused {
-		// 暂停时点中央按钮恢复；其余触点不产生世界输入。
+		// 暂停时点中央按钮恢复、点设置按钮进入设置；其余触点不产生世界输入。
 		if pointIn(l.ResumeBtn, pos) {
 			st.PauseToggle = true
 			return roleResume
+		}
+		if pointIn(l.SettingsBtn, pos) {
+			st.SettingsOpen = true
+			return roleSettings
 		}
 		return roleLook
 	}
@@ -199,8 +204,12 @@ func assignRole(l *Layout, flying, paused bool, pos rl.Vector2, st *State) int {
 		}
 	}
 	if pointIn(l.JoystickZone, pos) {
-		// 动态摇杆：按下点即基座中心
-		joyCenter = pos
+		// 摇杆：自由模式在按下点生成，固定模式基座锚在设定位置
+		if l.FreeJoystick {
+			joyCenter = pos
+		} else {
+			joyCenter = l.JoystickCenter
+		}
 		joyOn = true
 		joyKnob = pos
 		return roleJoystick

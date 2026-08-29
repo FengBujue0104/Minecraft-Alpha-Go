@@ -45,6 +45,16 @@ func platformRead(l *Layout, flying, paused bool) State {
 
 	st.PauseToggle = rl.IsKeyPressed(rl.KeyEscape)
 	st.ToggleHUD = rl.IsKeyPressed(rl.KeyF1)
+
+	// 暂停时的设置按钮（鼠标点击）
+	if paused && rl.IsMouseButtonPressed(rl.MouseLeftButton) {
+		m := rl.GetMousePosition()
+		if l.SettingsBtn.Width > 0 &&
+			m.X >= l.SettingsBtn.X && m.X < l.SettingsBtn.X+l.SettingsBtn.Width &&
+			m.Y >= l.SettingsBtn.Y && m.Y < l.SettingsBtn.Y+l.SettingsBtn.Height {
+			st.SettingsOpen = true
+		}
+	}
 	return st
 }
 
