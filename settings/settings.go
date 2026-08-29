@@ -42,6 +42,8 @@ type Settings struct {
 	HotbarScaleSet bool
 	HotbarScale    float32 // 0.5..2.0
 
+	RenderTier int // 渲染距离档位 1..5，1 为默认
+
 	// Buttons 键存在于 map 即表示用户自定义过该按钮。
 	Buttons map[string]Btn
 }
@@ -51,7 +53,18 @@ var Current = Defaults()
 
 // Defaults 返回默认设置。
 func Defaults() *Settings {
-	return &Settings{SensX: 1, SensY: 1, HotbarScale: 1}
+	return &Settings{SensX: 1, SensY: 1, HotbarScale: 1, RenderTier: 1}
+}
+
+// ClampTier 把渲染距离档位限制到 1..5。
+func ClampTier(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > 5 {
+		return 5
+	}
+	return v
 }
 
 func clamp(v, lo, hi float32) float32 {
@@ -129,6 +142,7 @@ func Load() {
 	s.FreeJoystick = flags&(1<<3) != 0
 	s.AnchorSet = flags&(1<<4) != 0
 	s.HotbarScaleSet = flags&(1<<5) != 0
+	s.RenderTier = ClampTier(int(flags>>8) & 7)
 	s.SensX = ClampSens(b2f(data[8:12]))
 	s.SensY = ClampSens(b2f(data[12:16]))
 	s.AnchorX = ClampAnchorX(b2f(data[16:20]))
@@ -176,6 +190,7 @@ func Save() {
 	if Current.HotbarScaleSet {
 		flags |= 1 << 5
 	}
+	flags |= uint32(Current.RenderTier&7) << 8
 	binary.LittleEndian.PutUint32(buf[4:8], flags)
 	f2b(buf[8:12], Current.SensX)
 	f2b(buf[12:16], Current.SensY)

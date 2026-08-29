@@ -14,6 +14,7 @@ import (
 	"mc-go/blocks"
 	"mc-go/input"
 	"mc-go/player"
+	"mc-go/save"
 	"mc-go/settings"
 	"mc-go/world"
 )
@@ -240,39 +241,108 @@ func main() {
 	settings.Load()
 	drawMilestones()
 
-	seed := time.Now().UnixNano()
-	fmt.Printf("Seed: %d\n", seed)
-	w := world.NewWorld(seed)
-	logLocal("main: world created")
-	drawMilestones()
-
-	spawnX := float32(0)
-	spawnZ := float32(0)
-
-	fmt.Println("Loading initial chunks...")
-	w.EnsureChunksAround(spawnX, spawnZ)
-	w.FlushGenerations()
-	logLocal("main: initial chunks flushed")
-	drawMilestones()
-	fmt.Printf("Done! Loaded %d chunks.\n", w.ChunkCount())
-
-	// Stand on the surface. Falls back to a safe height only when no ground
-	// was found at all -- previously this read GroundHeight's 0 sentinel as a
-	// real height, so the fallback could never trigger.
-	spawnY := float32(100)
-	if g, ok := w.GroundHeight(int(spawnX), int(spawnZ)); ok {
-		spawnY = float32(g) + 1
-	}
-	p := player.NewPlayer(spawnX, spawnY, spawnZ)
-	p.SkipNextMouseFrame() // initial cursor-disable spike
-	logLocal("main: player ready, entering loop")
-	drawMilestones()
-
-	showUI := true
-	physicsAccum := float32(0)
+	// ---- 会话管理：封面选槽后才创建世界与玩家 ----
+	appDir := appDataDir()
+	var w *world.World
+	var p *player.Player
+	sessionActive := false
 	paused := false
+	physicsAccum := float32(0)
 	pauseUI := pauseOverlay{}
 	var lay input.Layout
+	activeSlot := 0 // 0=无存档开始；1..3=存档槽
+	autosaveTimer := float32(0)
+	var lookSmX, lookSmY float32
+	pendingSlot := -1
+	var title titleState
+	title.refresh(appDir, false)
+	uiMode = uiTitle
+
+	writeSave := func() {
+		if !sessionActive || activeSlot <= 0 || w == nil || p == nil {
+			return
+		}
+		save.Write(appDir, activeSlot, save.Data{
+			Seed:      w.Seed(),
+			LastSaved: time.Now().Unix(),
+			Player: save.PlayerState{
+				X: p.Position.X, Y: p.Position.Y, Z: p.Position.Z,
+				Yaw: p.Yaw, Pitch: p.Pitch,
+				Flying: p.Flying, Selected: uint8(p.SelectedBlock),
+			},
+			Edits: w.ExportEdits(),
+		})
+	}
+
+	startSession := func(slot int) {
+		seed := time.Now().UnixNano()
+		var saved *save.Data
+		if slot > 0 {
+			if d, err := save.Read(appDir, slot); err == nil {
+				saved = &d
+				seed = d.Seed
+			}
+		}
+		fmt.Printf("Seed: %d (slot %d)\n", seed, slot)
+		if w != nil {
+			w.UnloadAll()
+		}
+		w = world.NewWorld(seed)
+		if saved != nil && len(saved.Edits) > 0 {
+			w.ImportEdits(saved.Edits)
+		}
+		w.SetLoadDist(settings.Current.RenderTier)
+
+		spawnX, spawnZ := float32(0), float32(0)
+		if saved != nil {
+			spawnX, spawnZ = saved.Player.X, saved.Player.Z
+		}
+		fmt.Println("Loading initial chunks...")
+		w.EnsureChunksAround(spawnX, spawnZ)
+		w.FlushGenerations()
+		fmt.Printf("Done! Loaded %d chunks.\n", w.ChunkCount())
+
+		if saved != nil {
+			p = player.NewPlayer(saved.Player.X, saved.Player.Y, saved.Player.Z)
+			p.Yaw = saved.Player.Yaw
+			p.Pitch = saved.Player.Pitch
+			p.Flying = saved.Player.Flying
+			p.SelectHotbarBlock(blocks.BlockType(saved.Player.Selected))
+		} else {
+			spawnY := float32(100)
+			if g, ok := w.GroundHeight(int(spawnX), int(spawnZ)); ok {
+				spawnY = float32(g) + 1
+			}
+			p = player.NewPlayer(spawnX, spawnY, spawnZ)
+		}
+		p.AutoJump = settings.Current.AutoJump
+		p.SkipNextMouseFrame()
+		logLocal("main: session ready, entering loop")
+
+		activeSlot = slot
+		sessionActive = true
+		autosaveTimer = 0
+		lookSmX, lookSmY = 0, 0
+		paused = false
+		pauseUI.SetPaused(false)
+		uiMode = uiGame
+		rl.DisableCursor()
+	}
+
+	onSwitchSave = func() {
+		writeSave()
+		paused = false
+		uiMode = uiTitle
+		title.refresh(appDir, true)
+		rl.EnableCursor()
+	}
+	setRenderTier = func(tier int) {
+		if w != nil {
+			w.SetLoadDist(tier)
+		}
+	}
+
+	showUI := true
 
 	for !rl.WindowShouldClose() {
 		frameTime := rl.GetFrameTime()
@@ -283,7 +353,21 @@ func main() {
 		// 布局先行：触点命中区、HUD 绘制与暂停按钮共用同一组矩形。
 		buildLayout(&lay)
 
-		if uiMode == uiGame {
+		if pendingSlot == -2 {
+			// 封面「返回当前游戏」：会话未销毁，直接恢复
+			pendingSlot = -1
+			uiMode = uiGame
+			paused = false
+			pauseUI.SetPaused(false)
+			rl.DisableCursor()
+			p.SkipNextMouseFrame()
+		} else if pendingSlot >= 0 {
+			slot := pendingSlot
+			pendingSlot = -1
+			startSession(slot)
+		}
+
+		if uiMode == uiGame && sessionActive {
 			in := input.Read(&lay, p.Flying, paused)
 
 			if in.PauseToggle {
@@ -291,6 +375,7 @@ func main() {
 				pauseUI.SetPaused(paused)
 				if paused {
 					rl.EnableCursor()
+					writeSave() // 暂停即存档
 				} else {
 					rl.DisableCursor()
 					p.SkipNextMouseFrame()
@@ -300,6 +385,7 @@ func main() {
 			if in.SettingsOpen && paused {
 				uiMode = uiSettings
 				ed = editorState{}
+				writeSave()
 			}
 
 			if in.ToggleHUD {
@@ -307,21 +393,34 @@ func main() {
 			}
 
 			if !paused {
-				// 用户偏好：自动跳跃 + 视角反转/灵敏度
+				// 用户偏好：自动跳跃 + 视角反转/灵敏度；快速拖动用轻微
+				// 指数平滑抹平触点抖动与偶发掉帧的顿挫，松手后残量快衰。
 				p.AutoJump = settings.Current.AutoJump
-				if in.LookDX != 0 || in.LookDY != 0 {
-					if settings.Current.InvertX {
-						in.LookDX = -in.LookDX
-					}
-					if settings.Current.InvertY {
-						in.LookDY = -in.LookDY
-					}
-					in.LookDX *= settings.Current.SensX
-					in.LookDY *= settings.Current.SensY
+				lookSmX = lookSmX*0.55 + in.LookDX*0.45
+				lookSmY = lookSmY*0.55 + in.LookDY*0.45
+				if in.LookDX == 0 {
+					lookSmX *= 0.4
 				}
+				if in.LookDY == 0 {
+					lookSmY *= 0.4
+				}
+				in.LookDX, in.LookDY = lookSmX, lookSmY
+				if settings.Current.InvertX {
+					in.LookDX = -in.LookDX
+				}
+				if settings.Current.InvertY {
+					in.LookDY = -in.LookDY
+				}
+				in.LookDX *= settings.Current.SensX
+				in.LookDY *= settings.Current.SensY
 				p.Update(in, w)
-				if p.ConsumeBlockAction() == player.BreakBlock {
-					effects.PlayBreak()
+				if act := p.ConsumeBlockAction(); act != player.NoBlockAction {
+					if act == player.BreakBlock {
+						effects.PlayBreak()
+					}
+					if activeSlot > 0 {
+						writeSave() // 方块改动即时保存
+					}
 				}
 
 				physicsAccum += frameTime
@@ -329,9 +428,19 @@ func main() {
 					p.StepPhysics(w, PhysicsDt)
 					physicsAccum -= PhysicsDt
 				}
+
+				autosaveTimer += frameTime
+				if autosaveTimer >= 4 {
+					autosaveTimer = 0
+					if activeSlot > 0 {
+						writeSave()
+					}
+				}
 			} else {
 				physicsAccum = 0
 			}
+		} else if uiMode == uiTitle {
+			physicsAccum = 0
 		} else {
 			// 设置页/布局编辑器：输入与绘制都在绘制阶段自处理（即时模式），
 			// 这里只需保证游戏保持暂停。
@@ -339,12 +448,24 @@ func main() {
 		}
 		pauseUI.Update(frameTime)
 
+		if sessionActive && uiMode == uiGame {
+			w.EnsureChunksAround(p.Position.X, p.Position.Z)
+			w.ProcessGenerations()
+			w.ProcessDirty(world.DirtyBudgetPerFrame)
+		}
+
 		w.EnsureChunksAround(p.Position.X, p.Position.Z)
 		w.ProcessGenerations()
 		w.ProcessDirty(world.DirtyBudgetPerFrame)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.SkyBlue)
+
+		if uiMode == uiTitle {
+			titleFrame(&title, pendingSlot >= 0)
+			rl.EndDrawing()
+			continue
+		}
 
 		rl.BeginMode3D(p.Camera)
 		w.Render(p.Camera)
@@ -367,7 +488,7 @@ func main() {
 		}
 		drawPauseOverlay(&pauseUI, &lay)
 		if uiMode != uiGame {
-			drawSettingsPages(&lay)
+			drawSettingsPages(&lay, sessionActive)
 		}
 
 		rl.EndDrawing()

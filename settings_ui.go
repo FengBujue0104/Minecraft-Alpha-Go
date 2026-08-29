@@ -8,6 +8,7 @@ import (
 	"mc-go/input"
 	"mc-go/player"
 	"mc-go/settings"
+	"mc-go/world"
 )
 
 // 设置页与布局编辑器：即时模式 UI，逻辑与绘制在同一帧内完成（都在
@@ -22,7 +23,8 @@ type uiModeT int8
 const (
 	uiGame     uiModeT = iota // 游戏中
 	uiSettings                // 设置页
-	uiEditor                  // 布局编辑器
+	uiEditor
+	uiTitle                  // 布局编辑器
 )
 
 var uiMode = uiGame
@@ -36,6 +38,7 @@ type editorState struct {
 	sensYDrag bool
 	sizeDrag  bool
 	barDrag   bool
+	tierDrag  bool
 }
 
 var ed editorState
@@ -54,13 +57,19 @@ func uiEdges() (justPressed, down bool) {
 	return jp, d
 }
 
-func drawSettingsPages(lay *input.Layout) {
+// 设置页/编辑器切换存档与渲染距离的宿主钩子，main 在会话创建时注入。
+var (
+	onSwitchSave func()
+	setRenderTier func(tier int)
+)
+
+func drawSettingsPages(lay *input.Layout, sessionActive bool) {
 	w := float32(rl.GetScreenWidth())
 	h := float32(rl.GetScreenHeight())
 	rl.DrawRectangle(0, 0, int32(w), int32(h), rl.NewColor(13, 16, 24, 250))
 	switch uiMode {
 	case uiSettings:
-		settingsFrame(w, h)
+		settingsFrame(w, h, sessionActive)
 	case uiEditor:
 		editorFrame(lay, w, h)
 	}
@@ -212,7 +221,7 @@ func backPressed() bool {
 
 // ---------- 设置页 ----------
 
-func settingsFrame(w, h float32) {
+func settingsFrame(w, h float32, sessionActive bool) {
 	s := uiScale()
 	set := settings.Current
 	justPressed, down := uiEdges()
@@ -263,13 +272,38 @@ func settingsFrame(w, h float32) {
 	set.SensY = settings.ClampSens(sliderRow("垂直灵敏度", set.SensY, 0.2, 3, &ed.sensYDrag))
 	set.AutoJump = toggleRow("自动跳跃", set.AutoJump)
 
+	// 渲染距离：5 个分档（非无级），拖动时吸附到档位
+	tier := float32(set.RenderTier)
+	rl.DrawRectangleRec(rl.Rectangle{X: rowX, Y: y, Width: rowW, Height: rowH}, rl.NewColor(26, 32, 44, 220))
+	drawTextC("渲染距离", rowX+14*s, y+rowH/2-11*s, 19*s, rl.White)
+	bar := rl.Rectangle{X: rowX + rowW*0.44, Y: y + rowH/2 - 8*s, Width: rowW*0.32, Height: 16 * s}
+	tier = float32(settings.ClampTier(int(sliderC(bar, tier, 1, 5, &ed.tierDrag, down) + 0.5)))
+	drawTextC(fmt.Sprintf("第%d档 · 半径%d", int(tier), world.LoadDistTiers[int(tier)-1]), bar.X+bar.Width+12*s, y+rowH/2-10*s, 15*s, rl.NewColor(255, 224, 112, 255))
+	if int(tier) != set.RenderTier {
+		set.RenderTier = int(tier)
+		if setRenderTier != nil {
+			setRenderTier(set.RenderTier)
+		}
+	}
+	y += rowH + 10*s
+
 	entry := rl.Rectangle{X: rowX, Y: y, Width: rowW, Height: rowH}
 	if buttonC(entry, "自定义布局", 18*s, justPressed) {
 		uiMode = uiEditor
 		ed = editorState{}
 		return
 	}
-	drawTextC("设置会自动保存", rowX+14*s, y+rowH+12*s, 14*s, rl.Gray)
+	y += rowH + 10*s
+
+	if sessionActive {
+		switchRow := rl.Rectangle{X: rowX, Y: y, Width: rowW, Height: rowH}
+		if buttonC(switchRow, "切换存档", 18*s, justPressed) && onSwitchSave != nil {
+			onSwitchSave()
+			return
+		}
+		y += rowH + 10*s
+	}
+	drawTextC("设置会自动保存", rowX+14*s, y+12*s, 14*s, rl.Gray)
 }
 
 // ---------- 布局编辑器 ----------

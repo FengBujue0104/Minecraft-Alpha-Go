@@ -33,12 +33,90 @@ type World struct {
 	loadDist   int // How many chunks to load around player in each direction
 	generating map[[2]int]struct{}
 	genResults chan *Chunk
-	dirty      [][2]int            // FIFO of chunks needing a visibility rebuild
+	done       chan struct{}      // 关闭后取消在途生成（UnloadAll）
+	dirty      [][2]int           // FIFO of chunks needing a visibility rebuild
 	dirtySet   map[[2]int]struct{} // membership of dirty, to avoid queueing twice
-	order      [][2]int            // stable draw order; map order would flicker
-	tOrder     [][2]int            // scratch: order re-sorted back to front
-	visible    [][2]int            // scratch: order minus chunks behind the camera
+	order      [][2]int           // stable draw order; map order would flicker
+	tOrder     [][2]int           // scratch: order re-sorted back to front
+	visible    [][2]int           // scratch: order minus chunks behind the camera
 	orderDirty bool
+	edits      map[[3]int]blocks.BlockType            // 玩家修改：世界坐标 → 方块（存档用）
+	editsByChunk map[[2]int]map[[3]int]blocks.BlockType // 生成插入时按区块应用
+}
+
+// LoadDistTiers 是渲染距离档位（1..5）对应的加载半径。第 1 档为
+// 原始的 5x5 窗口；后四档按平方增长，档位差在真机上实测后再定稿。
+var LoadDistTiers = [5]int{2, 3, 4, 5, 6}
+
+// SetLoadDist 按档位（1..5）设置渲染距离，下一帧 EnsureChunksAround 生效。
+func (w *World) SetLoadDist(tier int) {
+	if tier < 1 {
+		tier = 1
+	}
+	if tier > len(LoadDistTiers) {
+		tier = len(LoadDistTiers)
+	}
+	w.loadDist = LoadDistTiers[tier-1]
+}
+
+// LoadDist 返回当前加载半径。
+func (w *World) LoadDist() int { return w.loadDist }
+
+// Seed 返回世界种子。
+func (w *World) Seed() int64 { return w.seed }
+
+// EditRecord 是一条方块修改的可序列化形式。
+type EditRecord struct {
+	X, Y, Z int32
+	Block   uint8
+}
+
+// ExportEdits 导出全部玩家修改（存档用）。
+func (w *World) ExportEdits() []EditRecord {
+	out := make([]EditRecord, 0, len(w.edits))
+	for k, b := range w.edits {
+		out = append(out, EditRecord{X: int32(k[0]), Y: int32(k[1]), Z: int32(k[2]), Block: uint8(b)})
+	}
+	return out
+}
+
+// ImportEdits 预载存档中的修改；区块异步生成插入时自动应用。
+func (w *World) ImportEdits(list []EditRecord) {
+	for _, e := range list {
+		w.recordEdit(int(e.X), int(e.Y), int(e.Z), blocks.BlockType(e.Block))
+	}
+}
+
+// EditCount 返回玩家修改数量。
+func (w *World) EditCount() int { return len(w.edits) }
+
+// recordEdit 记录一次修改到两个索引：世界坐标全集（序列化）与区块本地
+// 索引（异步生成插入时应用）。
+func (w *World) recordEdit(wx, wy, wz int, b blocks.BlockType) {
+	w.edits[[3]int{wx, wy, wz}] = b
+	cx, cz := floorDiv(wx, ChunkWidth), floorDiv(wz, ChunkDepth)
+	lx, lz := wx-cx*ChunkWidth, wz-cz*ChunkDepth
+	key := [2]int{cx, cz}
+	m := w.editsByChunk[key]
+	if m == nil {
+		m = make(map[[3]int]blocks.BlockType)
+		w.editsByChunk[key] = m
+	}
+	m[[3]int{lx, wy, lz}] = b
+}
+
+// UnloadAll 释放全部区块的 GPU 资源并复位会话状态（切换存档时调用）。
+func (w *World) UnloadAll() {
+	for _, c := range w.chunks {
+		c.Unload()
+	}
+	w.chunks = make(map[[2]int]*Chunk)
+	w.generating = make(map[[2]int]struct{})
+	w.dirty = nil
+	w.dirtySet = make(map[[2]int]struct{})
+	w.order = nil
+	w.orderDirty = false
+	close(w.done)
 }
 
 // NewWorld creates a new world with the given seed.
@@ -52,7 +130,10 @@ func NewWorld(seed int64) *World {
 		// Sized above the largest window (5x5 = 25) so a burst of finished
 		// generations never parks a worker goroutine on the send.
 		genResults: make(chan *Chunk, 32),
+		done:       make(chan struct{}),
 		dirtySet:   make(map[[2]int]struct{}),
+		edits:      make(map[[3]int]blocks.BlockType),
+		editsByChunk: make(map[[2]int]map[[3]int]blocks.BlockType),
 	}
 	return w
 }
@@ -124,7 +205,10 @@ func (w *World) LoadChunk(cx, cz int) {
 // the main thread owns and mutates.
 func (w *World) generateChunkAsync(c *Chunk) {
 	w.generateTerrain(c)
-	w.genResults <- c
+	select {
+	case w.genResults <- c:
+	case <-w.done:
+	}
 }
 
 // insertChunk publishes a finished chunk. Main thread only.
@@ -134,6 +218,13 @@ func (w *World) insertChunk(c *Chunk) {
 	w.chunks[key] = c
 	delete(w.generating, key)
 	w.orderDirty = true
+
+	// 应用该区块的存档修改（地形生成不包含玩家改动）
+	if lm := w.editsByChunk[key]; lm != nil {
+		for lk, b := range lm {
+			c.SetBlock(lk[0], lk[1], lk[2], b)
+		}
+	}
 
 	// A chunk's boundary faces depend on whether the adjacent chunk is
 	// present, so arrival invalidates this chunk and all four neighbours.
@@ -181,7 +272,12 @@ func (w *World) ProcessDirty(budget int) {
 // player does not spawn into an unrendered world.
 func (w *World) FlushGenerations() {
 	for len(w.generating) > 0 {
-		w.insertChunk(<-w.genResults)
+		select {
+		case c := <-w.genResults:
+			w.insertChunk(c)
+		case <-w.done:
+			return
+		}
 	}
 	w.ProcessDirty(0)
 }
@@ -305,6 +401,7 @@ func (w *World) SetBlock(wx, wy, wz int, b blocks.BlockType) {
 	}
 
 	c.SetBlock(lx, wy, lz, b)
+	w.recordEdit(wx, wy, wz, b)
 	c.ComputeVisibility(w.GetChunk)
 
 	// Rebuild neighbors if on chunk boundary

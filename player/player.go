@@ -99,6 +99,17 @@ func (p *Player) SelectHotbarSlot(slot int) {
 	}
 }
 
+// SelectHotbarBlock selects the slot holding the given block type (save
+// loading). Unknown blocks keep the current selection.
+func (p *Player) SelectHotbarBlock(b blocks.BlockType) {
+	for _, item := range HotbarItems {
+		if item == b {
+			p.SelectedBlock = item
+			return
+		}
+	}
+}
+
 // SelectedHotbarSlot returns the selected zero-based slot.
 func (p *Player) SelectedHotbarSlot() int {
 	for i, item := range HotbarItems {
@@ -119,17 +130,23 @@ func (p *Player) ConsumeBlockAction() BlockAction {
 // Update handles per-frame input, camera, and block interaction. Input arrives
 // as a State snapshot so the same code serves keyboard/mouse and touch play.
 func (p *Player) Update(in input.State, w *world.World) {
-	// Look — cap first-frame spike
+	// Look — cap first-frame spike. 钳制而非清零：快速拖动时单帧位移
+	// 超过阈值很常见，清零会让视角瞬间停顿（不丝滑的主要来源）。
 	mouseDelta := rl.Vector2{X: in.LookDX, Y: in.LookDY}
 	if p.skipMouse {
 		mouseDelta = rl.Vector2{}
 		p.skipMouse = false
 	}
-	if mouseDelta.X > 50 || mouseDelta.X < -50 {
-		mouseDelta.X = 0
+	const maxDelta = 90
+	if mouseDelta.X > maxDelta {
+		mouseDelta.X = maxDelta
+	} else if mouseDelta.X < -maxDelta {
+		mouseDelta.X = -maxDelta
 	}
-	if mouseDelta.Y > 50 || mouseDelta.Y < -50 {
-		mouseDelta.Y = 0
+	if mouseDelta.Y > maxDelta {
+		mouseDelta.Y = maxDelta
+	} else if mouseDelta.Y < -maxDelta {
+		mouseDelta.Y = -maxDelta
 	}
 	p.Yaw += mouseDelta.X * MouseSensitivity
 	p.Pitch += mouseDelta.Y * MouseSensitivity
